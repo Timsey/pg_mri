@@ -277,7 +277,7 @@ def create_datasets(args):
     test_mask = MaskFunc(args.center_fractions, args.accelerations)
 
     # We cannot use the original dataset when active learning, since we have no test data then.
-    train_path = args.data_path / f'{args.challenge}_train_orig'
+    train_path = args.data_path / f'{args.challenge}_train_al'
 
     train_data = SliceData(
         root=train_path,

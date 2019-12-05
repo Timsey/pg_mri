@@ -1,36 +1,22 @@
 <component name="ProjectDictionaryState">
   <dictionary name="tbakker">
     <words>
-      <w>accel</w>
-      <w>accels</w>
       <w>backpropagate</w>
-      <w>bayesmri</w>
       <w>chans</w>
       <w>conv</w>
       <w>convolutional</w>
       <w>corpd</w>
       <w>corpdfs</w>
       <w>cuda</w>
-      <w>datasets</w>
       <w>downsampling</w>
-      <w>fname</w>
-      <w>fracs</w>
-      <w>freqs</w>
       <w>impro</w>
+      <w>impros</w>
+      <w>inds</w>
+      <w>krow</w>
       <w>kspace</w>
-      <w>logscale</w>
-      <w>logvar</w>
-      <w>multicoil</w>
       <w>pretrained</w>
-      <w>relu</w>
-      <w>rfft</w>
-      <w>singlecoil</w>
       <w>ssim</w>
-      <w>stds</w>
-      <w>subsampled</w>
       <w>subsampling</w>
-      <w>timsey</w>
-      <w>unet</w>
       <w>unnormalisation</w>
       <w>unsqueeze</w>
       <w>untrainable</w>

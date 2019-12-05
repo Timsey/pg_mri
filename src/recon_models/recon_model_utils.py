@@ -8,13 +8,13 @@ from src.helpers import transforms
 # from train_bayes_unet_param import Arguments
 
 
-def build_recon_model(args):
+def build_recon_model(recon_args, args):
     gauss_model = UnetModelParam(
         in_chans=1,
         out_chans=1,
-        chans=args.num_chans,
-        num_pool_layers=args.num_pools,
-        drop_prob=args.drop_prob
+        chans=recon_args.num_chans,
+        num_pool_layers=recon_args.num_pools,
+        drop_prob=recon_args.drop_prob
     ).to(args.device)
 
     # No gradients for this model
@@ -32,15 +32,15 @@ class Arguments:
         pass
 
 
-def load_recon_model(checkpoint_file):
-    checkpoint = torch.load(checkpoint_file)
-    args = checkpoint['args']
-    model = build_recon_model(args)
+def load_recon_model(args):
+    checkpoint = torch.load(args.recon_model_checkpoint)
+    recon_args = checkpoint['args']
+    recon_model = build_recon_model(recon_args, args)
     if args.data_parallel:
-        model = torch.nn.DataParallel(model)
-    model.load_state_dict(checkpoint['model'])
+        recon_model = torch.nn.DataParallel(recon_model)
+    recon_model.load_state_dict(checkpoint['model'])
     del checkpoint
-    return args, model
+    return recon_args, recon_model
 
 
 def normalize_instance_batch(data, eps=0.):
@@ -69,3 +69,13 @@ def acquire_new_zf(full_kspace, masked_kspace, next_row):
     cloned_masked_kspace[..., next_row, :] = full_kspace[..., next_row, :]
     zero_filled, mean, std = get_new_zf(cloned_masked_kspace)
     return zero_filled, mean, std
+
+
+def acquire_new_zf_exp(kspace, masked_kspace_exp):
+    # Acquire row
+    indices = list(range(masked_kspace_exp.size(0)))
+    for index in indices:
+        masked_kspace_exp[index, :, index, :] = kspace[0, :, index, :]
+
+    zero_filled_exp, mean_exp, std_exp = get_new_zf(masked_kspace_exp)
+    return zero_filled_exp, mean_exp, std_exp
