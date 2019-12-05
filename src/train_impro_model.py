@@ -12,7 +12,7 @@ from tensorboardX import SummaryWriter
 from src.helpers.utils import add_mask_params
 from src.helpers.data_loading import create_data_loaders
 from src.helpers.metrics import ssim
-from src.recon_models.recon_model_utils import load_recon_model, recon_model_forward_pass, acquire_new_zf
+from src.recon_models.recon_model_utils import load_recon_model, acquire_new_zf
 from src.impro_models.impro_model_utils import load_impro_model, build_impro_model, build_optim, save_model
 
 logging.basicConfig(level=logging.INFO)
@@ -25,14 +25,18 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     start_epoch = start_iter = time.perf_counter()
     global_step = epoch * len(train_loader)
     for iter, data in enumerate(train_loader):
-        kspace, masked_kspace, mask, zf, gt, mean, std, norm = data
+        kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
+        kspace = kspace.to(args.device)
+        masked_kspace = masked_kspace.to(args.device)
+        mask = mask.to(args.device)
+        zf = zf.to(args.device)
+        gt = gt.to(args.device)
         mean = mean.unsqueeze(1).unsqueeze(2).to(args.device)
         std = std.unsqueeze(1).unsqueeze(2).to(args.device)
-        gt = gt.to(args.device)
         gt = gt * std + mean
 
-        loc, logscale = recon_model_forward_pass(recon_model, zf.to(args.device))
+        loc, logscale = recon_model(zf.unsqueeze(1))
         norm_loc = loc * std + mean
 
         base_score = ssim(norm_loc.squeeze(1), gt)  # TODO: Use norm here?
@@ -43,15 +47,17 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         #  1) Per slice, vectorise over all rows to acquire, then concatenate these together as a target.
         #  2) Per batch, vectorise over all rows to acquire. This requires checking for every slice whether a
         #     particular row needs acquisition.
-        target = torch.zeros((zf.size(0), mask.size(-1)))
-        for row, val in enumerate(mask):
-            if not val:
+        target = torch.zeros((zf.size(0), mask.size(-1)))  # batch_size x resolution
+        for sl, (mk, m) in enumerate(zip(masked_kspace, mask)):  # Loop over batch
+            for row, val in enumerate(m):  # Loop over kspace rows for this slice
+                if val:  # Skip already acquired rows
+                    continue
                 # Acquire this row and get resulting score improvement
-                new_zf, new_mean, new_std = acquire_new_zf(kspace, masked_kspace, row)
-                new_loc, _ = recon_model_forward_pass(recon_model, zf.to(args.device))
-                norm_new_loc = new_loc.squeeze(1) * new_std + new_mean
+                new_zf, new_mean, new_std = acquire_new_zf(kspace, mk, row)
+                new_loc, _ = recon_model(new_zf.unsqueeze(1))
+                norm_new_loc = new_loc.squeeze(1) * new_std + new_mean  # TODO: Maybe unnecessary (see above TODO)
                 impro = ssim(norm_new_loc, gt) - base_score  # batch_size x 1
-                target[:, row] = impro
+                target[sl, row] = impro
 
         output = model(torch.cat((loc, logscale), dim=1), mask)  # TODO: Check if mask is right shape
 
@@ -71,12 +77,12 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 f'Time = {time.perf_counter() - start_iter:.4f}s',
             )
         start_iter = time.perf_counter()
-    return train_loss, time.perf_counter() - start_epoch
+    return avg_loss, time.perf_counter() - start_epoch
 
 
 def evaluate(args, epoch, model, dev_loader, writer):
     # TODO: How to evaluate model succinctly? Maybe skip?
-    return dev_loss, dev_time
+    pass
 
 
 def visualise(args, epoch, model, display_loader, writer):
@@ -118,6 +124,10 @@ def main(args):
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer)
+
+        import sys
+        sys.exit()
+
         dev_loss, dev_time = evaluate(args, epoch, model, dev_loader, writer)
         visualise(args, epoch, model, display_loader, writer)
 

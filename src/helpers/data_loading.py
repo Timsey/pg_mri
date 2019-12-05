@@ -146,31 +146,6 @@ class MaskFunc:
         return mask
 
 
-def apply_mask(data, mask_func, seed=None):
-    """
-    Subsample given k-space by multiplying with a mask.
-
-    Args:
-        data (torch.Tensor): The input k-space data. This should have at least 3 dimensions, where
-            dimensions -3 and -2 are the spatial dimensions, and the final dimension has size
-            2 (for complex values).
-        mask_func (callable): A function that takes a shape (tuple of ints) and a random
-            number seed and returns a mask.
-        seed (int or 1-d array_like, optional): Seed for the random number generator.
-
-    Returns:
-        (tuple): tuple containing:
-            masked data (torch.Tensor): Subsampled k-space data
-            mask (torch.Tensor): The generated mask
-
-    Additionally returns the used acceleration and center fraction for evaluation purposes.
-    """
-    shape = np.array(data.shape)
-    shape[:-3] = 1
-    mask = mask_func(shape, seed)
-    return data * mask, mask
-
-
 class DataTransform:
     """
     Data Transformer for training U-Net models.
@@ -225,9 +200,6 @@ class DataTransform:
         # Take real or complex abs to get a real image (this should be almost exactly the real part of the above)
         # TODO: Take real part or complex abs here?
         zf = transforms.complex_abs(zf)
-        # Apply Root-Sum-of-Squares if multicoil data
-        if self.which_challenge == 'multicoil':
-            zf = transforms.root_sum_of_squares(zf)
         # Normalize input
         zf, mean, std = transforms.normalize_instance(zf, eps=1e-11)
         zf = zf.clamp(-6, 6)
@@ -272,6 +244,31 @@ class DataTransform:
         # rfft this image to get the kspace that will be used in active learning
         kspace = rfft2(image)
         return kspace
+
+
+def apply_mask(data, mask_func, seed=None):
+    """
+    Subsample given k-space by multiplying with a mask.
+
+    Args:
+        data (torch.Tensor): The input k-space data. This should have at least 3 dimensions, where
+            dimensions -3 and -2 are the spatial dimensions, and the final dimension has size
+            2 (for complex values).
+        mask_func (callable): A function that takes a shape (tuple of ints) and a random
+            number seed and returns a mask.
+        seed (int or 1-d array_like, optional): Seed for the random number generator.
+
+    Returns:
+        (tuple): tuple containing:
+            masked data (torch.Tensor): Subsampled k-space data
+            mask (torch.Tensor): The generated mask
+
+    Additionally returns the used acceleration and center fraction for evaluation purposes.
+    """
+    shape = np.array(data.shape)
+    shape[:-3] = 1
+    mask = mask_func(shape, seed)
+    return data * mask, mask
 
 
 def create_datasets(args):

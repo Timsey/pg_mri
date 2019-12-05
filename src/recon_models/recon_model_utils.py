@@ -30,11 +30,6 @@ def load_recon_model(checkpoint_file):
     return args, model
 
 
-def recon_model_forward_pass(dist_model, zf):
-    loc, logscale = dist_model(zf.unsqueeze(1))
-    return loc, logscale
-
-
 def normalize_instance_batch(data, eps=0.):
     # Normalises instances over last two dimensions (other dimensions are assumed to be batch dimensions)
     mean = data.mean(dim=(-2, -1), keepdim=True)
@@ -56,6 +51,8 @@ def get_new_zf(masked_kspace_batch):
 def acquire_new_zf(full_kspace, masked_kspace, next_row):
     # Acquire row
     cloned_masked_kspace = masked_kspace.clone()
+    # Acquire row for all samples in the batch
+    # shape = (batch_dim, column, row, complex)
     cloned_masked_kspace[:, :, next_row, :] = full_kspace[:, :, next_row, :]
     zero_filled, mean, std = get_new_zf(cloned_masked_kspace)
     return zero_filled, mean, std
