@@ -42,7 +42,7 @@ class SliceData(Dataset):
             files = files[:num_files]
         for fname in sorted(files):
             # If 'acquisition' is specified, only slices from volumes that have been gathered using the specified
-            # acquisition technique ('CORPD_FBK' or 'CORPDFS_FBK'). This adds overhead in creating the dataset.
+            # acquisition technique ('CORPD_FBK' or 'CORPDFS_FBK').
             if acquisition in ('CORPD_FBK', 'CORPDFS_FBK'):
                 with h5py.File(fname) as target:
                     if acquisition != target.attrs['acquisition']:
@@ -277,11 +277,7 @@ def create_datasets(args):
     test_mask = MaskFunc(args.center_fractions, args.accelerations)
 
     # We cannot use the original dataset when active learning, since we have no test data then.
-    if not args.active_learn:
-        train_path = args.data_path / f'{args.challenge}_train_orig'
-    else:
-        print('\nWARNING: Using AL dataset\n')
-        train_path = args.data_path / f'{args.challenge}_train_al'
+    train_path = args.data_path / f'{args.challenge}_train_orig'
 
     train_data = SliceData(
         root=train_path,

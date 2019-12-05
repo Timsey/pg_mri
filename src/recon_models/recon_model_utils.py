@@ -3,6 +3,10 @@ import torch
 from .unet_dist_model import UnetModelParam
 from src.helpers import transforms
 
+# import sys
+# sys.path.append("home/timsey/Projects/bayesmri/train_bayes_unet_param")
+# from train_bayes_unet_param import Arguments
+
 
 def build_recon_model(args):
     gauss_model = UnetModelParam(
@@ -14,9 +18,18 @@ def build_recon_model(args):
     ).to(args.device)
 
     # No gradients for this model
-    for param in gauss_model.features.parameters():
+    for param in gauss_model.parameters():
         param.requires_grad = False
     return gauss_model
+
+
+class Arguments:
+    """
+    Required to load the reconstruction model. Pickle requires the class definition to be visible/importable
+    when loading a checkpoint containing an instance of that class.
+    """
+    def __init__(self):
+        pass
 
 
 def load_recon_model(checkpoint_file):
@@ -53,6 +66,6 @@ def acquire_new_zf(full_kspace, masked_kspace, next_row):
     cloned_masked_kspace = masked_kspace.clone()
     # Acquire row for all samples in the batch
     # shape = (batch_dim, column, row, complex)
-    cloned_masked_kspace[:, :, next_row, :] = full_kspace[:, :, next_row, :]
+    cloned_masked_kspace[..., next_row, :] = full_kspace[..., next_row, :]
     zero_filled, mean, std = get_new_zf(cloned_masked_kspace)
     return zero_filled, mean, std

@@ -1,3 +1,27 @@
+import json
+
+
+def save_json(path, data):
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=4)
+
+
+def load_json(path):
+    with open(path, 'r') as f:
+        data = json.load(f)
+    return data
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters())
+
+
+def count_trainable_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def count_untrainable_parameters(model):
+    return sum(p.numel() for p in model.parameters() if not p.requires_grad)
 
 
 def add_mask_params(args, recon_args):
@@ -31,3 +55,13 @@ def add_mask_params(args, recon_args):
         args.reciprocals_in_center = all_reciprocals_in_center
 
     return args
+
+
+def check_args_consistency(args, recon_args):
+    assert args.data_path == recon_args.data_path, ("Data path mismatch between reconstruction model and provided: "
+                                                    "{} and {}".format(args.data_path, recon_args.data_path))
+    assert args.resolution == recon_args.resolution, ("Resolution mismatch between reconstruction model and provided: "
+                                                      "{} and {}".format(args.resolution, recon_args.resolution))
+    assert args.challenge == recon_args.challenge, ("Challenge mismatch between reconstruction model and provided: "
+                                                    "{} and {}".format(args.challenge, recon_args.challenge))
+

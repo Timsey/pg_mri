@@ -1,5 +1,6 @@
 import logging
 import time
+import datetime
 import random
 import argparse
 import pathlib
@@ -9,10 +10,12 @@ import torch
 import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 
-from src.helpers.utils import add_mask_params
+from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
+                               count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
 from src.helpers.metrics import ssim
-from src.recon_models.recon_model_utils import load_recon_model, acquire_new_zf
+# Importing Arguments is required for loading of reconstruction model
+from src.recon_models.recon_model_utils import load_recon_model, acquire_new_zf, Arguments
 from src.impro_models.impro_model_utils import load_impro_model, build_impro_model, build_optim, save_model
 
 logging.basicConfig(level=logging.INFO)
@@ -27,19 +30,22 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     for iter, data in enumerate(train_loader):
         kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
-        kspace = kspace.to(args.device)
-        masked_kspace = masked_kspace.to(args.device)
-        mask = mask.to(args.device)
-        zf = zf.to(args.device)
-        gt = gt.to(args.device)
-        mean = mean.unsqueeze(1).unsqueeze(2).to(args.device)
-        std = std.unsqueeze(1).unsqueeze(2).to(args.device)
+        # shape after unsqueeze = batch x channel x columns x rows x complex
+        kspace = kspace.unsqueeze(1).to(args.device)
+        masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
+        mask = mask.unsqueeze(1).to(args.device)
+        # shape after unsqueeze = batch x channel x columns x rows
+        zf = zf.unsqueeze(1).to(args.device)
+        gt = gt.unsqueeze(1).to(args.device)
+        mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+        std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt = gt * std + mean
 
-        loc, logscale = recon_model(zf.unsqueeze(1))
-        norm_loc = loc * std + mean
+        loc, logscale = recon_model(zf)
+        norm_loc = loc * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
 
-        base_score = ssim(norm_loc.squeeze(1), gt)  # TODO: Use norm here?
+        base_score = F.mse_loss(norm_loc, gt, reduction='none').mean(1).mean(1).mean(1)
+        # base_score = ssim(norm_loc, gt, size_average=False)  # TODO: Use norm here?
 
         # Create improvement targets for this batch
         # TODO: Currently this doesn't work, because it loops over the mask for the entire batch simultaneously,
@@ -47,20 +53,29 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         #  1) Per slice, vectorise over all rows to acquire, then concatenate these together as a target.
         #  2) Per batch, vectorise over all rows to acquire. This requires checking for every slice whether a
         #     particular row needs acquisition.
-        target = torch.zeros((zf.size(0), mask.size(-1)))  # batch_size x resolution
-        for sl, (mk, m) in enumerate(zip(masked_kspace, mask)):  # Loop over batch
-            for row, val in enumerate(m):  # Loop over kspace rows for this slice
+        #  Currently we take ~2.5 seconds per slice to generate the full 320 resolution target
+        target = torch.zeros((mask.size(0), mask.size(-2)))  # batch_size x resolution
+        for sl, (k, mk, m) in enumerate(zip(kspace, masked_kspace, mask)):  # Loop over batch
+            t = time.perf_counter()
+            for row, val in enumerate(m[0, 0, :, 0]):  # Loop over kspace rows for this slice
                 if val:  # Skip already acquired rows
                     continue
                 # Acquire this row and get resulting score improvement
-                new_zf, new_mean, new_std = acquire_new_zf(kspace, mk, row)
-                new_loc, _ = recon_model(new_zf.unsqueeze(1))
-                norm_new_loc = new_loc.squeeze(1) * new_std + new_mean  # TODO: Maybe unnecessary (see above TODO)
-                impro = ssim(norm_new_loc, gt) - base_score  # batch_size x 1
+                new_zf, new_mean, new_std = acquire_new_zf(k, mk, row)
+                new_loc, _ = recon_model(new_zf.unsqueeze(0))
+                # TODO: Maybe unnormalisation is unnecessary (see above TODO)
+                norm_new_loc = new_loc * new_std.unsqueeze(0) + new_mean.unsqueeze(0)
+                # ssim wants 4 dimensional input
+                impro = (base_score[sl, ...] - F.mse_loss(norm_new_loc, gt[sl, ...].unsqueeze(1))) * 10e11
+                # impro = ssim(norm_new_loc, gt[sl, ...].unsqueeze(0)) - base_score[sl, ...]  # batch_size x 1
                 target[sl, row] = impro
+            print('Epoch {}, batch {}, slice {}, time {:.3f}s'.format(epoch, iter, sl, time.perf_counter() - t))
 
-        output = model(torch.cat((loc, logscale), dim=1), mask)  # TODO: Check if mask is right shape
+        # Improvement model output
+        output = model(torch.cat((loc, logscale), dim=1), mask.squeeze())
 
+        # Compute loss and backpropagate
+        target = target.to(args.device)
         loss = F.l1_loss(output, target)  # TODO: Think about loss function
         optimiser.zero_grad()
         loss.backward()
@@ -91,14 +106,10 @@ def visualise(args, epoch, model, display_loader, writer):
 
 
 def main(args):
-    # Initialise summary writer
-    args.exp_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(log_dir=args.exp_dir / 'summary')
     # Reconstruction model
     recon_args, recon_model = load_recon_model(args.recon_model_checkpoint)
+    check_args_consistency(args, recon_args)
 
-    # Add mask parameters for training
-    args = add_mask_params(args, recon_args)
     # Model to train
     if args.resume:
         checkpoint, model, optimiser = load_impro_model(args.checkpoint)
@@ -108,14 +119,35 @@ def main(args):
         del checkpoint
     else:
         model = build_impro_model(args)
+        # Add mask parameters for training
+        args = add_mask_params(args, recon_args)
         if args.data_parallel:
             model = torch.nn.DataParallel(model)
         optimiser = build_optim(args, model.parameters())
         best_dev_loss = 1e9
         start_epoch = 0
+        # Create directory to store results in
+        args.run_dir = args.exp_dir / datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        args.run_dir.mkdir(parents=True, exist_ok=False)
+
+    # Logging
     logging.info(args)
     logging.info(recon_model)
     logging.info(model)
+    # Save arguments for bookkeeping
+    args_dict = {key: str(value) for key, value in args.__dict__.items()
+                 if not key.startswith('__') and not callable(key)}
+    save_json(args.run_dir / 'args.json', args_dict)
+
+    # Initialise summary writer
+    writer = SummaryWriter(log_dir=args.run_dir / 'summary')
+
+    print('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
+        count_parameters(recon_model), count_trainable_parameters(recon_model),
+        count_untrainable_parameters(recon_model)))
+
+    print('Improvement model parameters: total {}, of which {} trainable and {} untrainable'.format(
+        count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
 
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
@@ -124,10 +156,6 @@ def main(args):
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer)
-
-        import sys
-        sys.exit()
-
         dev_loss, dev_time = evaluate(args, epoch, model, dev_loader, writer)
         visualise(args, epoch, model, display_loader, writer)
 
@@ -154,6 +182,9 @@ def create_arg_parser():
                         help='Path to the dataset')
     parser.add_argument('--sample-rate', type=float, default=1.,
                         help='Fraction of total volumes to include')
+    parser.add_argument('--acquisition', type=str, default=None,
+                        help='Use only volumes acquired using the provided acquisition method. Options are: '
+                             'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and None (both used).')
 
     # Reconstruction model
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, required=True,
@@ -164,17 +195,19 @@ def create_arg_parser():
 
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
     # argument use-recon-mask-params above.
-    parser.add_argument('--accelerations', nargs='+', default=[4, 8], type=int,
+    parser.add_argument('--accelerations', nargs='+', default=[8, 12, 16], type=int,
                         help='Ratio of k-space columns to be sampled. If multiple values are '
                              'provided, then one of those is chosen uniformly at random for '
                              'each volume.')
-    parser.add_argument('--reciprocals-in-center', nargs='+', default=[0.08, 0.04], type=float,
+    parser.add_argument('--reciprocals-in-center', nargs='+', default=[1], type=float,
                         help='Inverse fraction of rows (after subsampling) that should be in the center. E.g. if half '
                              'of the sampled rows should be in the center, this should be set to 2. All combinations '
                              'of acceleration and reciprocals-in-center will be used during training (every epoch a '
                              'volume randomly gets assigned an acceleration and center fraction.')
 
-    parser.add_argument('--num-pools', type=int, default=4, help='Number of U-Net pooling layers')
+    parser.add_argument('--num-pools', type=int, default=4, help='Number of ConvNet pooling layers. Note that setting '
+                        'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
+                        'layer size post-flattening.')
     parser.add_argument('--drop-prob', type=float, default=0, help='Dropout probability')
     parser.add_argument('--num-chans', type=int, default=16, help='Number of ConvNet channels')
     parser.add_argument('--in-chans', default=2, type=int, help='Number of image input channels'
@@ -193,10 +226,12 @@ def create_arg_parser():
     parser.add_argument('--report-interval', type=int, default=100, help='Period of loss reporting')
     parser.add_argument('--data-parallel', action='store_true',
                         help='If set, use multiple GPUs using data parallelism')
+    parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Which device to train on. Set to "cuda" to use the GPU')
     parser.add_argument('--exp-dir', type=pathlib.Path, required=True,
-                        help='Path where model and results should be saved')
+                        help='Directory where model and results should be saved. Will create a timestamped folder '
+                        'in provided directory each run')
 
     parser.add_argument('--resume', action='store_true',
                         help='If set, resume the training from a previous model checkpoint. '
@@ -204,11 +239,12 @@ def create_arg_parser():
     parser.add_argument('--checkpoint', type=str,
                         help='Path to an existing checkpoint. Used along with "--resume"')
 
-    parser.add_argument('--max-train', type=int, default=None,
-                        help='How many batches to train on maximally."')
-    parser.add_argument('--max-eval', type=int, default=None,
-                        help='How many batches to evaluate on maximally."')
-
+    parser.add_argument('--max-train-slices', type=int, default=None,
+                        help='How many slices to train on maximally."')
+    parser.add_argument('--max-dev-slices', type=int, default=None,
+                        help='How many slices to evaluate on maximally."')
+    parser.add_argument('--max-test-slices', type=int, default=None,
+                        help='How many slices to test on maximally."')
     return parser
 
 

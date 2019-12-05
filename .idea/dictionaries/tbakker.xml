@@ -3,6 +3,8 @@
     <words>
       <w>accel</w>
       <w>accels</w>
+      <w>backpropagate</w>
+      <w>bayesmri</w>
       <w>chans</w>
       <w>conv</w>
       <w>convolutional</w>
@@ -27,6 +29,11 @@
       <w>stds</w>
       <w>subsampled</w>
       <w>subsampling</w>
+      <w>timsey</w>
+      <w>unet</w>
+      <w>unnormalisation</w>
+      <w>unsqueeze</w>
+      <w>untrainable</w>
       <w>vectorise</w>
     </words>
   </dictionary>
