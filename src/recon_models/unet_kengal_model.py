@@ -1,3 +1,10 @@
+"""
+Copyright (c) Facebook, Inc. and its affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+"""
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -24,9 +31,9 @@ class ConvBlock(nn.Module):
 
         self.layers = nn.Sequential(
             nn.Conv2d(in_chans, out_chans, kernel_size=3, padding=1),
-            nn.InstanceNorm2d(out_chans),
+            nn.InstanceNorm2d(out_chans),  # Does not use batch statistics: unaffected by model.eval() or model.train()
             nn.ReLU(),
-            nn.Dropout2d(drop_prob),
+            nn.Dropout2d(drop_prob),  # To do MC dropout, need model.train() at eval time.
             nn.Conv2d(out_chans, out_chans, kernel_size=3, padding=1),
             nn.InstanceNorm2d(out_chans),
             nn.ReLU(),
@@ -48,7 +55,7 @@ class ConvBlock(nn.Module):
             f'drop_prob={self.drop_prob})'
 
 
-class UnetModelParam(nn.Module):
+class UnetModel(nn.Module):
     """
     PyTorch implementation of a U-Net model.
 
@@ -75,36 +82,21 @@ class UnetModelParam(nn.Module):
         self.num_pool_layers = num_pool_layers
         self.drop_prob = drop_prob
 
-        # Encoder
         self.down_sample_layers = nn.ModuleList([ConvBlock(in_chans, chans, drop_prob)])
         ch = chans
         for i in range(num_pool_layers - 1):
             self.down_sample_layers += [ConvBlock(ch, ch * 2, drop_prob)]
             ch *= 2
         self.conv = ConvBlock(ch, ch, drop_prob)
-        vch = ch
 
-        # Mean decoder
-        self.up_sample_mean = nn.ModuleList()
+        self.up_sample_layers = nn.ModuleList()
         for i in range(num_pool_layers - 1):
-            self.up_sample_mean += [ConvBlock(ch * 2, ch // 2, drop_prob)]
+            self.up_sample_layers += [ConvBlock(ch * 2, ch // 2, drop_prob)]
             ch //= 2
-        self.up_sample_mean += [ConvBlock(ch * 2, ch, drop_prob)]
+        self.up_sample_layers += [ConvBlock(ch * 2, ch, drop_prob)]
         self.conv2 = nn.Sequential(
             nn.Conv2d(ch, ch // 2, kernel_size=1),
             nn.Conv2d(ch // 2, out_chans, kernel_size=1),
-            nn.Conv2d(out_chans, out_chans, kernel_size=1),
-        )
-
-        # Log variance decoder
-        self.up_sample_logvar = nn.ModuleList()
-        for i in range(num_pool_layers - 1):
-            self.up_sample_logvar += [ConvBlock(vch * 2, vch // 2, drop_prob)]
-            vch //= 2
-        self.up_sample_logvar += [ConvBlock(vch * 2, vch, drop_prob)]
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(vch, vch // 2, kernel_size=1),
-            nn.Conv2d(vch // 2, out_chans, kernel_size=1),
             nn.Conv2d(out_chans, out_chans, kernel_size=1),
         )
 
@@ -114,50 +106,30 @@ class UnetModelParam(nn.Module):
             input (torch.Tensor): Input tensor of shape [batch_size, self.in_chans, height, width]
 
         Returns:
-            Mean (torch.Tensor): Output tensor of shape [batch_size, self.out_chans, height, width]
-            Log variance (torch.Tensor): Output tensor of shape [batch_size, self.out_chans, height, width]
+            (torch.Tensor): Output tensor of shape [batch_size, self.out_chans, height, width]
         """
-        meanstack, varstack = [], []
-        enc = input
+        stack = []
+        output = input
         # Apply down-sampling layers
         for layer in self.down_sample_layers:
-            enc = layer(enc)
-            meanstack.append(enc)
-            varstack.append(enc)
-            enc = F.max_pool2d(enc, kernel_size=2)
+            output = layer(output)
+            stack.append(output)
+            output = F.max_pool2d(output, kernel_size=2)
 
-        enc = self.conv(enc)
-        meanenc = enc
-        logvarenc = enc.clone()
+        output = self.conv(output)
 
-        # Apply up-sampling layers for mean
-        for layer in self.up_sample_mean:
-            meanenc = F.interpolate(meanenc, scale_factor=2, mode='bilinear', align_corners=False)
-            meanenc = torch.cat([meanenc, meanstack.pop()], dim=1)
-            meanenc = layer(meanenc)
-
-        # Apply up-sampling layers for mean
-        for layer in self.up_sample_logvar:
-            logvarenc = F.interpolate(logvarenc, scale_factor=2, mode='bilinear', align_corners=False)
-            logvarenc = torch.cat([logvarenc, varstack.pop()], dim=1)
-            logvarenc = layer(logvarenc)
-
-        return self.conv2(meanenc), self.conv2(logvarenc)
+        # Apply up-sampling layers
+        for layer in self.up_sample_layers:
+            output = F.interpolate(output, scale_factor=2, mode='bilinear', align_corners=False)
+            output = torch.cat([output, stack.pop()], dim=1)
+            output = layer(output)
+        return self.conv2(output)
 
 
-class Arguments:
-    """
-    Required to load the reconstruction model. Pickle requires the class definition to be visible/importable
-    when loading a checkpoint containing an instance of that class.
-    """
-    def __init__(self):
-        pass
-
-
-def build_dist_model(recon_args, args):
-    gauss_model = UnetModelParam(
+def build_kengal_model(recon_args, args):
+    gauss_model = UnetModel(
         in_chans=1,
-        out_chans=1,
+        out_chans=2,
         chans=recon_args.num_chans,
         num_pool_layers=recon_args.num_pools,
         drop_prob=recon_args.drop_prob
@@ -167,4 +139,3 @@ def build_dist_model(recon_args, args):
     for param in gauss_model.parameters():
         param.requires_grad = False
     return gauss_model
-

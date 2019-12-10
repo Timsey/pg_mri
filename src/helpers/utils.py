@@ -58,8 +58,6 @@ def add_mask_params(args, recon_args):
 
 
 def check_args_consistency(args, recon_args):
-    assert args.data_path == recon_args.data_path, ("Data path mismatch between reconstruction model and provided: "
-                                                    "{} and {}".format(args.data_path, recon_args.data_path))
     assert args.resolution == recon_args.resolution, ("Resolution mismatch between reconstruction model and provided: "
                                                       "{} and {}".format(args.resolution, recon_args.resolution))
     assert args.challenge == recon_args.challenge, ("Challenge mismatch between reconstruction model and provided: "

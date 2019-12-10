@@ -1,42 +1,34 @@
 import torch
-
-from .unet_dist_model import UnetModelParam
 from src.helpers import transforms
 
-# import sys
-# sys.path.append("home/timsey/Projects/bayesmri/train_bayes_unet_param")
-# from train_bayes_unet_param import Arguments
+from src.recon_models.unet_dist_model import build_dist_model
+from src.recon_models.unet_kengal_model import build_kengal_model
 
 
-def build_recon_model(recon_args, args):
-    gauss_model = UnetModelParam(
-        in_chans=1,
-        out_chans=1,
-        chans=recon_args.num_chans,
-        num_pool_layers=recon_args.num_pools,
-        drop_prob=recon_args.drop_prob
-    ).to(args.device)
-
-    # No gradients for this model
-    for param in gauss_model.parameters():
-        param.requires_grad = False
-    return gauss_model
-
-
-class Arguments:
-    """
-    Required to load the reconstruction model. Pickle requires the class definition to be visible/importable
-    when loading a checkpoint containing an instance of that class.
-    """
-    def __init__(self):
-        pass
+def recon_model_forward_pass(args, recon_model, zf):
+    model_name = recon_model.__class__.__name__
+    if args.recon_model_name == 'kengal_laplace':
+        output = recon_model(zf)
+    elif args.recon_model_name == 'dist_gauss':
+        loc, logscale = recon_model(zf)
+        output = torch.cat((loc, logscale), dim=1)
+    else:
+        raise ValueError('Model type {} is not supported'.format(model_name))
+    # Output of size batch x channel x resolution x resolution
+    return output
 
 
 def load_recon_model(args):
     checkpoint = torch.load(args.recon_model_checkpoint)
     recon_args = checkpoint['args']
-    recon_model = build_recon_model(recon_args, args)
-    if args.data_parallel:
+    if args.recon_model_name == 'kengal_laplace':
+        recon_model = build_kengal_model(recon_args, args)
+    elif args.recon_model_name == 'dist_gauss':
+        recon_model = build_dist_model(recon_args, args)
+    else:
+        raise ValueError('Model name {} is not a valid option.'.format(args.recon_model_name))
+
+    if recon_args.data_parallel:  # if model was saved with data_parallel
         recon_model = torch.nn.DataParallel(recon_model)
     recon_model.load_state_dict(checkpoint['model'])
     del checkpoint
@@ -71,11 +63,12 @@ def acquire_new_zf(full_kspace, masked_kspace, next_row):
     return zero_filled, mean, std
 
 
-def acquire_new_zf_exp(kspace, masked_kspace_exp):
+def acquire_new_zf_exp(k, mk, to_acquire):
+    # Expand masked kspace over channel dimension to prepare for adding all kspace rows to acquire
+    mk_exp = mk.expand(len(to_acquire), -1, -1, -1).clone()  # TODO: .clone() necessary here? Yes?
     # Acquire row
-    indices = list(range(masked_kspace_exp.size(0)))
-    for index in indices:
-        masked_kspace_exp[index, :, index, :] = kspace[0, :, index, :]
-
-    zero_filled_exp, mean_exp, std_exp = get_new_zf(masked_kspace_exp)
+    for index, row in enumerate(to_acquire):
+        mk_exp[index, :, row.item(), :] = k[0, :, row.item(), :]
+    # Obtain zero filled image from all len(to_acquire) new kspaces
+    zero_filled_exp, mean_exp, std_exp = get_new_zf(mk_exp)
     return zero_filled_exp, mean_exp, std_exp

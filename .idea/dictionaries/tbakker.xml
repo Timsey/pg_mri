@@ -12,11 +12,19 @@
       <w>impro</w>
       <w>impros</w>
       <w>inds</w>
+      <w>kengal</w>
       <w>krow</w>
       <w>kspace</w>
+      <w>kspaces</w>
+      <w>logscale</w>
+      <w>logvarenc</w>
+      <w>meanenc</w>
+      <w>multicoil</w>
       <w>pretrained</w>
+      <w>singlecoil</w>
       <w>ssim</w>
       <w>subsampling</w>
+      <w>unet</w>
       <w>unnormalisation</w>
       <w>unsqueeze</w>
       <w>untrainable</w>

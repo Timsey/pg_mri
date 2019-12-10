@@ -10,16 +10,65 @@ import torch
 import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 
+# Importing Arguments is required for loading of reconstruction model
+from src.recon_models.unet_dist_model import Arguments
+
+from src.helpers.metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
-from src.helpers.metrics import ssim
-# Importing Arguments is required for loading of reconstruction model
-from src.recon_models.recon_model_utils import load_recon_model, acquire_new_zf, Arguments, acquire_new_zf_exp
+from src.recon_models.recon_model_utils import acquire_new_zf_exp, recon_model_forward_pass, load_recon_model
 from src.impro_models.impro_model_utils import load_impro_model, build_impro_model, build_optim, save_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def create_batch_target(kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output):
+    recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
+    norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
+
+    # TODO: SSIM here
+    base_score = F.mse_loss(norm_recon, gt, reduction='none').mean(1).mean(1).mean(1)
+    # base_score = ssim(norm_loc, gt, size_average=False)  # TODO: Use norm here?
+
+    # Create improvement targets for this batch
+    target = torch.zeros((mask.size(0), mask.size(-2))).to(args.device)  # batch_size x resolution
+    # Per slice, batch over rows
+    bt = time.perf_counter()
+    for sl, (k, mk, m) in enumerate(zip(kspace, masked_kspace, mask)):  # Loop over batch
+        target = obtain_slice_target(sl, k, m, mk, recon_model, gt, base_score, target)
+    if args.verbose >= 2:
+        print('Time to create target for batch of size {}: {:.3f}s'.format(gt.size(0), time.perf_counter() - bt))
+    return target
+
+
+def obtain_slice_target(sl, k, m, mk, recon_model, gt, base_score, target):
+    st = time.perf_counter()
+    # Vectorise masked kspace over all rows to be acquired
+    to_acquire = (m[0, 0, :, 0] == 0).nonzero().flatten()
+    # Obtain new zero filled image for all potential rows to acquire
+    zf_exp, mean_exp, std_exp = acquire_new_zf_exp(k, mk, to_acquire)
+    # zf_exp, mean_exp, std_exp = acquire_new_zf_exp(k, mk, to_acquire)
+    recon_batch_inds = [k for k in range(0, len(to_acquire), args.krow_batch_size)]
+    # Cannot do ~300 forward passes at the same time, so batch them
+    for j in recon_batch_inds:
+        # Add 'channel' dimension. Treat kspace row dim as batch dim
+        batch_zf = zf_exp[j:j + args.krow_batch_size, :, :]
+        if batch_zf.size(0) == 0:  # Catch batches of size 0
+            continue
+        batch_output = recon_model_forward_pass(args, recon_model, batch_zf.unsqueeze(1))
+        batch_recon = batch_output[:, 0:1, ...]
+        batch_mean = mean_exp[j:j + args.krow_batch_size].unsqueeze(1)
+        batch_std = std_exp[j:j + args.krow_batch_size].unsqueeze(1)
+        norm_batch_recon = batch_recon * batch_std + batch_mean  # TODO: Normalisation necessary?
+        batch_gt = gt[sl, ...].expand(norm_batch_recon.size(0), -1, -1).unsqueeze(1)
+        batch_scores = F.mse_loss(norm_batch_recon, batch_gt, reduction='none').mean(1).mean(1).mean(1)
+        impros = (base_score[sl] - batch_scores) * 1e12
+        target[sl, to_acquire[j:j + args.krow_batch_size]] = impros
+    if args.verbose >= 3:
+        print('Time to create target for a single slice: {:.3f}s'.format(time.perf_counter() - st))
+    return target
 
 
 def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer):
@@ -41,51 +90,12 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt = gt * std + mean
 
-        loc, logscale = recon_model(zf)
-        norm_loc = loc * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
-
-        base_score = F.mse_loss(norm_loc, gt, reduction='none').mean(1).mean(1).mean(1)
-        # base_score = ssim(norm_loc, gt, size_average=False)  # TODO: Use norm here?
-
-        # Create improvement targets for this batch
-        # TODO: Currently this doesn't work, because it loops over the mask for the entire batch simultaneously,
-        #  which makes no sense because the mask can be different for every slice. Two solutions:
-        #  1) Per slice, vectorise over all rows to acquire, then concatenate these together as a target.
-        #  2) Per batch, vectorise over all rows to acquire. This requires checking for every slice whether a
-        #     particular row needs acquisition.
-        #  Currently we take ~2.5 seconds per slice to generate the full 320 resolution target
-        target = torch.zeros((mask.size(0), mask.size(-2))).to(args.device)  # batch_size x resolution
-
-        # Per slice, all rows
-        bt = time.perf_counter()
-        for sl, (k, mk, m) in enumerate(zip(kspace, masked_kspace, mask)):  # Loop over batch
-            st = time.perf_counter()
-            # Vectorise masked kspace over all rows to be acquired
-            to_acquire = (m[0, 0, :, 0] == 0).nonzero().flatten()
-            mk_exp = mk.expand(len(to_acquire), -1, -1, -1).clone()  # TODO: .clone() here?
-            # Obtain new zero filled image for all potential rows to acquire
-            zf_exp, mean_exp, std_exp = acquire_new_zf_exp(k, mk_exp)
-            recon_batch_inds = [k for k in range(0, len(to_acquire), args.krow_batch_size)]
-            for j in recon_batch_inds:  # Cannot do ~300 forward passes at the same time, so batch them.
-                # Add 'channel' dimension. Treat kspace row dim as batch dim
-                batch_zf = zf_exp[j:j + args.krow_batch_size, :, :]
-                if batch_zf.size(0) == 0:  # Catch batches of size 0
-                    continue
-                batch_new_loc, _ = recon_model(batch_zf.unsqueeze(1))
-                batch_mean = mean_exp[j:j + args.krow_batch_size].unsqueeze(1)
-                batch_std = std_exp[j:j + args.krow_batch_size].unsqueeze(1)
-                norm_batch_new_loc = batch_new_loc * batch_std + batch_mean  # TODO: Normalisation necessary?
-                batch_gt = gt[sl, ...].expand(norm_batch_new_loc.size(0), -1, -1).unsqueeze(1)
-                batch_scores = F.mse_loss(norm_batch_new_loc, batch_gt, reduction='none').mean(1).mean(1).mean(1)
-                impros = (base_score[sl] - batch_scores) * 10e11
-                target[sl, to_acquire[j:j + args.krow_batch_size]] = impros
-            if args.verbose >= 2:
-                print('Time to create target for a single slice: {:.3f}s'.format(time.perf_counter() - st))
-        if args.verbose >= 1:
-            print('Time to create target for batch of size {}: {:.3f}s'.format(gt.size(0), time.perf_counter() - bt))
-
+        # Base reconstruction model forward pass
+        recon_output = recon_model_forward_pass(args, recon_model, zf)
+        # Get impro model input and target: this step requires many forward passes through the reconstruction model
+        target = create_batch_target(kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output)
         # Improvement model output
-        output = model(torch.cat((loc, logscale), dim=1), mask.squeeze())
+        output = model(recon_output, mask.squeeze())
 
         # Compute loss and backpropagate
         loss = F.l1_loss(output, target)  # TODO: Think about loss function
@@ -107,9 +117,37 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     return avg_loss, time.perf_counter() - start_epoch
 
 
-def evaluate(args, epoch, model, dev_loader, writer):
-    # TODO: How to evaluate model succinctly? Maybe skip?
-    pass
+def evaluate(args, epoch, recon_model, model, dev_loader, writer):
+    model.eval()
+    losses = []
+    start = time.perf_counter()
+    with torch.no_grad():
+        for _, data in enumerate(dev_loader):
+            kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
+            # TODO: Maybe normalisation unnecessary for SSIM target?
+            # shape after unsqueeze = batch x channel x columns x rows x complex
+            kspace = kspace.unsqueeze(1).to(args.device)
+            masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
+            mask = mask.unsqueeze(1).to(args.device)
+            # shape after unsqueeze = batch x channel x columns x rows
+            zf = zf.unsqueeze(1).to(args.device)
+            gt = gt.unsqueeze(1).to(args.device)
+            mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+            std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+            gt = gt * std + mean
+
+            # Base reconstruction model forward pass
+            recon_output = recon_model_forward_pass(args, recon_model, zf)
+            # Get impro model input and target: this step requires many forward passes through the reconstruction model
+            target = create_batch_target(kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output)
+            # Improvement model output
+            output = model(recon_output, mask.squeeze())
+
+            # Compute loss and backpropagate
+            loss = F.l1_loss(output, target)  # TODO: Think about loss function
+            losses.append(loss.item())
+        writer.add_scalar('Dev_Loss', np.mean(losses), epoch)
+    return np.mean(losses), time.perf_counter() - start
 
 
 def visualise(args, epoch, model, display_loader, writer):
@@ -154,6 +192,7 @@ def main(args):
     # Initialise summary writer
     writer = SummaryWriter(log_dir=args.run_dir / 'summary')
 
+    # Parameter counting
     if args.verbose >= 1:
         print('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
             count_parameters(recon_model), count_trainable_parameters(recon_model),
@@ -168,20 +207,21 @@ def main(args):
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
     scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
 
+    # Training and evaluation
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer)
-        # dev_loss, dev_time = evaluate(args, epoch, model, dev_loader, writer)
+        dev_loss, dev_time = evaluate(args, epoch, recon_model, model, dev_loader, writer)
         # visualise(args, epoch, model, display_loader, writer)
 
-        # is_new_best = dev_loss < best_dev_loss
-        # best_dev_loss = min(best_dev_loss, dev_loss)
-        # save_model(args, args.exp_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
-        # logging.info(
-        #     f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.4g} '
-        #     f'DevLoss = {dev_loss:.4g} TrainTime = {train_time:.4f}s DevTime = {dev_time:.4f}s',
-        # )
-        save_model(args, args.exp_dir, epoch, model, optimiser, None, False)
+        is_new_best = dev_loss < best_dev_loss
+        best_dev_loss = min(best_dev_loss, dev_loss)
+        save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
+        logging.info(
+            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.4g} '
+            f'DevLoss = {dev_loss:.4g} TrainTime = {train_time:.4f}s DevTime = {dev_time:.4f}s',
+        )
+        # save_model(args, args.run_dir, epoch, model, optimiser, None, False)
     writer.close()
 
 
@@ -192,7 +232,7 @@ def create_arg_parser():
     parser.add_argument('--resolution', default=320, type=int, help='Resolution of images')
 
     # Data parameters
-    parser.add_argument('--challenge', choices=['singlecoil', 'multicoil'], required=True,
+    parser.add_argument('--challenge', type=str, default='singlecoil',
                         help='Which challenge')
     parser.add_argument('--data-path', type=pathlib.Path, required=True,
                         help='Path to the dataset')
@@ -200,18 +240,20 @@ def create_arg_parser():
                         help='Fraction of total volumes to include')
     parser.add_argument('--acquisition', type=str, default=None,
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
-                             'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and None (both used).')
+                             'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
 
     # Reconstruction model
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, required=True,
                         help='Path to a pretrained reconstruction model.')
+    parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'dist_gauss'], required=True,
+                        help='Reconstruction model name corresponding to model checkpoint.')
     parser.add_argument('--use-recon-mask-params', action='store_true',
                         help='Whether to use mask parameter settings (acceleration and center fraction) that the '
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
 
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
     # argument use-recon-mask-params above.
-    parser.add_argument('--accelerations', nargs='+', default=[8, 12, 16], type=int,
+    parser.add_argument('--accelerations', nargs='+', default=[4, 6, 8, 10], type=int,
                         help='Ratio of k-space columns to be sampled. If multiple values are '
                              'provided, then one of those is chosen uniformly at random for '
                              'each volume.')
@@ -225,7 +267,7 @@ def create_arg_parser():
                         'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
                         'layer size post-flattening.')
     parser.add_argument('--drop-prob', type=float, default=0, help='Dropout probability')
-    parser.add_argument('--num-chans', type=int, default=16, help='Number of ConvNet channels')
+    parser.add_argument('--num-chans', type=int, default=32, help='Number of ConvNet channels')
     parser.add_argument('--in-chans', default=2, type=int, help='Number of image input channels'
                         'E.g. set to 2 if input is reconstruction and uncertainty map')
 
@@ -262,7 +304,7 @@ def create_arg_parser():
                         help='How many slices to evaluate on maximally."')
     parser.add_argument('--max-test-slices', type=int, default=None,
                         help='How many slices to test on maximally."')
-    parser.add_argument('--verbose', type=str, default=1,
+    parser.add_argument('--verbose', type=int, default=1,
                         help='Set verbosity level. Lowest=0, highest=3."')
     return parser
 
