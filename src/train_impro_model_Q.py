@@ -17,57 +17,68 @@ from src.helpers.metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
-from src.recon_models.recon_model_utils import acquire_new_zf_exp, recon_model_forward_pass, load_recon_model
+from src.recon_models.recon_model_utils import acquire_new_zf_exp_batch, recon_model_forward_pass, load_recon_model
 from src.impro_models.impro_model_utils import load_impro_model, build_impro_model, build_optim, save_model
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output):
+def create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, recon_output,
+                        eps=1e-2, k=10):
     recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
 
     # TODO: SSIM here
+    # shape = batch
     base_score = F.mse_loss(norm_recon, gt, reduction='none').mean(1).mean(1).mean(1)
     # base_score = ssim(norm_loc, gt, size_average=False)  # TODO: Use norm here?
 
+    # Rows than can be acquired
+    unacquired = (mask[:, 0, :, 0] == 0).nonzero()
+
     # Create improvement targets for this batch
     target = torch.zeros((mask.size(0), mask.size(-2))).to(args.device)  # batch_size x resolution
-    # Per slice, batch over rows
-    bt = time.perf_counter()
-    for sl, (k, mk, m) in enumerate(zip(kspace, masked_kspace, mask)):  # Loop over batch
-        target = obtain_slice_target(args, sl, k, m, mk, recon_model, gt, base_score, target)
-    if args.verbose >= 2:
-        print('Time to create target for batch of size {}: {:.3f}s'.format(gt.size(0), time.perf_counter() - bt))
-    return target
 
+    # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
+    output = model(recon_output, mask.squeeze())
 
-def obtain_slice_target(args, sl, k, m, mk, recon_model, gt, base_score, target):
-    st = time.perf_counter()
-    # Vectorise masked kspace over all rows to be acquired
-    to_acquire = (m[0, 0, :, 0] == 0).nonzero().flatten()
-    # Obtain new zero filled image for all potential rows to acquire
-    zf_exp, mean_exp, std_exp = acquire_new_zf_exp(k, mk, to_acquire)
-    # zf_exp, mean_exp, std_exp = acquire_new_zf_exp(k, mk, to_acquire)
-    recon_batch_inds = [k for k in range(0, len(to_acquire), args.krow_batch_size)]
-    # Cannot do ~300 forward passes at the same time, so batch them
-    for j in recon_batch_inds:
-        # Add 'channel' dimension. Treat kspace row dim as batch dim
-        batch_zf = zf_exp[j:j + args.krow_batch_size, :, :]
-        if batch_zf.size(0) == 0:  # Catch batches of size 0
-            continue
-        batch_output = recon_model_forward_pass(args, recon_model, batch_zf.unsqueeze(1))
-        batch_recon = batch_output[:, 0:1, ...]
-        batch_mean = mean_exp[j:j + args.krow_batch_size].unsqueeze(1)
-        batch_std = std_exp[j:j + args.krow_batch_size].unsqueeze(1)
-        norm_batch_recon = batch_recon * batch_std + batch_mean  # TODO: Normalisation necessary?
-        batch_gt = gt[sl, ...].expand(norm_batch_recon.size(0), -1, -1).unsqueeze(1)
-        batch_scores = F.mse_loss(norm_batch_recon, batch_gt, reduction='none').mean(1).mean(1).mean(1)
-        impros = (base_score[sl] - batch_scores) * 1e12
-        target[sl, to_acquire[j:j + args.krow_batch_size]] = impros
-    if args.verbose >= 3:
-        print('Time to create target for a single slice: {:.3f}s'.format(time.perf_counter() - st))
+    _, topk_inds = torch.topk(output, k, dim=1)  # TODO: filter on unacquired?
+    replace = (eps > torch.rand(k))  # which of the top k rows to replace with random rows (binary mask)
+    replace_inds = replace.nonzero()  # which of the top k rows to replace with random rows (indices)
+    # Initialise output to train for
+    output_train = torch.zeros_like(output)
+    # Set topk values in output
+    output_train[topk_inds] = output[topk_inds]
+    # Now set random rows to overwrite topk values and inds (epsilon greedily)
+    for i in range(mask.size(0)):
+        # Which random rows to pick (without replacement here)  TODO: with replacement instead?
+        randrow_inds = torch.randperm(unacquired[i, :])[replace[i, :].sum():]
+        # Set training output for random rows (we want to train these rows, replacing a few of the topk rows)
+        output_train[i, randrow_inds] = output[i, randrow_inds]
+        # Replace training output for nongreedy rows (we don't want to train these rows this iteration)
+        output_train[i, replace_inds[i]] = 0
+        # Replace indices similarly, so that we know which rows to compute true targets for
+        topk_inds[i, replace_inds[i]] = randrow_inds
+
+    # TODO: DEBUG
+    # shape = batch x rows = k x res x res
+    zf_exp, mean_exp, std_exp = acquire_new_zf_exp_batch(kspace, masked_kspace, topk_inds)
+    # shape = batch . rows x 1 x res x res
+    zf_input = zf_exp.view(mask.size(0) * k, 1, mask.size(-2), mask.size(-2))
+    # shape = batch . rows x 2 x res x res
+    recons_output = recon_model_forward_pass(args, recon_model, zf_input)
+    # shape = batch . rows x 1 x res x res
+    recons = recons_output[:, 0:1, ...]
+    # shape = batch x rows x res x res
+    recons = recons.view(mask.size(0), k, mask.size(-2), mask.size(-2))
+    norm_recons = recons * std_exp + mean_exp  # TODO: Normalisation necessary?
+    gt = gt.expand(-1, k, -1, -1)
+    # shape = batch x rows
+    scores = F.mse_loss(norm_recons, gt, reduction='none').mean(1).mean(1)
+    impros = (base_score - scores) * 1e12
+    # shape = batch x rows
+    target[topk_inds] = impros
     return target
 
 
@@ -93,7 +104,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # Base reconstruction model forward pass
         recon_output = recon_model_forward_pass(args, recon_model, zf)
         # Get impro model input and target: this step requires many forward passes through the reconstruction model
-        target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output)
+        target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
+                                     recon_model, recon_output)
         # Improvement model output
         output = model(recon_output, mask.squeeze())
 

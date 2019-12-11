@@ -21,18 +21,28 @@ def recon_model_forward_pass(args, recon_model, zf):
 def load_recon_model(args):
     checkpoint = torch.load(args.recon_model_checkpoint)
     recon_args = checkpoint['args']
-    if args.recon_model_name == 'kengal_laplace':
-        recon_model = build_kengal_model(recon_args, args)
-    elif args.recon_model_name == 'dist_gauss':
-        recon_model = build_dist_model(recon_args, args)
-    else:
-        raise ValueError('Model name {} is not a valid option.'.format(args.recon_model_name))
+    recon_model = build_recon_model(recon_args, args)
+
+    # No gradients for this model
+    for param in recon_model.parameters():
+        param.requires_grad = False
 
     if recon_args.data_parallel:  # if model was saved with data_parallel
         recon_model = torch.nn.DataParallel(recon_model)
     recon_model.load_state_dict(checkpoint['model'])
     del checkpoint
     return recon_args, recon_model
+
+
+def build_recon_model(recon_args, args):
+    model_name = args.recon_model_name
+    if model_name == 'kengal_laplace':
+        recon_model = build_kengal_model(recon_args, args)
+    elif model_name == 'dist_gauss':
+        recon_model = build_dist_model(recon_args, args)
+    else:
+        raise ValueError("Recon model name {} is not a valid option.".format(model_name))
+    return recon_model
 
 
 def normalize_instance_batch(data, eps=0.):
@@ -70,5 +80,18 @@ def acquire_new_zf_exp(k, mk, to_acquire):
     for index, row in enumerate(to_acquire):
         mk_exp[index, :, row.item(), :] = k[0, :, row.item(), :]
     # Obtain zero filled image from all len(to_acquire) new kspaces
+    zero_filled_exp, mean_exp, std_exp = get_new_zf(mk_exp)
+    return zero_filled_exp, mean_exp, std_exp
+
+
+def acquire_new_zf_exp_batch(k, mk, to_acquire):
+    # Expand masked kspace over channel dimension to prepare for adding all kspace rows to acquire
+    mk_exp = mk.unsqueeze(1).expand(-1, to_acquire.size(1), -1, -1, -1).clone()  # TODO: .clone() necessary here? Yes?
+    # Loop over slices in batch
+    for sl, rows in enumerate(to_acquire):
+        # Loop over indices to acquire
+        for index, row in enumerate(rows):
+            mk_exp[sl, index, :, row.item(), :] = k[sl, :, row.item(), :]
+    # Obtain zero filled image from all new kspaces
     zero_filled_exp, mean_exp, std_exp = get_new_zf(mk_exp)
     return zero_filled_exp, mean_exp, std_exp

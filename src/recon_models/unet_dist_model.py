@@ -162,9 +162,5 @@ def build_dist_model(recon_args, args):
         num_pool_layers=recon_args.num_pools,
         drop_prob=recon_args.drop_prob
     ).to(args.device)
-
-    # No gradients for this model
-    for param in gauss_model.parameters():
-        param.requires_grad = False
     return gauss_model
 

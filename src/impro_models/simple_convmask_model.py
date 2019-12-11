@@ -47,7 +47,7 @@ class ConvBlock(nn.Module):
             f'drop_prob={self.drop_prob}, max_pool_size={self.pool_size})'
 
 
-class ImproModel(nn.Module):
+class ImproMaskModel(nn.Module):
     def __init__(self, resolution, in_chans, chans, num_pool_layers, drop_prob):
         """
         Args:
@@ -71,7 +71,7 @@ class ImproModel(nn.Module):
         # Every block except the first 2x2 max pools, reducing output by a factor 4
         # Every block except the first doubles channels, increasing output by a factor 2
 
-        self.pool_size = 2
+        self.pool_size = 4
         self.flattened_size = resolution ** 2 * chans
 
         # Initial from in_chans to chans
@@ -81,17 +81,30 @@ class ImproModel(nn.Module):
         self.down_sample_layers = nn.ModuleList([])
         ch = chans
         for i in range(num_pool_layers):
+            if i == 0:  # First two layers use 4x4 pooling, rest use 2x2 pooling  # TODO: this is badly hardcoded
+                self.pool_size = 2
             self.down_sample_layers += [ConvBlock(ch, ch * 2, drop_prob, pool_size=self.pool_size)]
-            # Keep track of number of output neurons
             self.flattened_size = self.flattened_size * 2 // self.pool_size ** 2
             ch *= 2
 
-        self.fc_out = nn.Sequential(
+        self.fc_recon = nn.Sequential(
             nn.Linear(in_features=self.flattened_size, out_features=1024),
             nn.LeakyReLU(),
             nn.Linear(in_features=1024, out_features=512),
             nn.LeakyReLU(),
-            nn.Linear(in_features=512, out_features=resolution)
+        )
+
+        self.mask_encoding = nn.Sequential(
+            nn.Linear(in_features=resolution, out_features=resolution),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=resolution, out_features=resolution),
+            nn.LeakyReLU(),
+        )
+
+        self.fc_out = nn.Sequential(
+            nn.Linear(in_features=512 + resolution, out_features=256 + resolution // 2),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=256 + resolution // 2, out_features=resolution)
         )
 
     def forward(self, image, mask):
@@ -110,13 +123,21 @@ class ImproModel(nn.Module):
         # Apply down-sampling layers
         for layer in self.down_sample_layers:
             image_emb = layer(image_emb)
-        image_emb = self.fc_out(image_emb.flatten(start_dim=1))  # flatten all but batch dimension
+        image_emb = self.fc_recon(image_emb.flatten(start_dim=1))  # flatten all but batch dimension
         assert len(image_emb.shape) == 2
-        return image_emb
+
+        # Mask embedding
+        mask_emb = self.mask_encoding(mask)
+        assert len(image_emb.shape) == 2
+
+        # First dimension is batch dimension
+        # Concatenate among second (last) dimension
+        emb = torch.cat((image_emb, mask_emb), dim=-1)
+        return self.fc_out(emb)
 
 
-def build_impro_conv_model(args):
-    model = ImproModel(
+def build_impro_conv_mask_model(args):
+    model = ImproMaskModel(
         resolution=args.resolution,
         in_chans=args.in_chans,
         chans=args.num_chans,

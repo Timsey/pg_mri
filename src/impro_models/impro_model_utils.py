@@ -1,7 +1,8 @@
 import torch
 import shutil
 
-from .simple_conv_model import ImproModel
+from .simple_convmask_model import build_impro_conv_mask_model
+from .simple_conv_model import build_impro_conv_model
 
 
 def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_best):
@@ -27,20 +28,19 @@ def load_impro_model(checkpoint_file):
     if args.data_parallel:
         model = torch.nn.DataParallel(model)
     model.load_state_dict(checkpoint['model'])
-
     optimiser = build_optim(args, model.parameters())
     optimiser.load_state_dict(checkpoint['optimizer'])
     return checkpoint, model, optimiser
 
 
 def build_impro_model(args):
-    model = ImproModel(
-        resolution=args.resolution,
-        in_chans=args.in_chans,
-        chans=args.num_chans,
-        num_pool_layers=args.num_pools,
-        drop_prob=args.drop_prob
-    ).to(args.device)
+    model_name = args.impro_model_name
+    if model_name == 'conv_mask':
+        model = build_impro_conv_model(args)
+    elif model_name == 'conv':
+        model = build_impro_conv_mask_model(args)
+    else:
+        raise ValueError("Impro model name {} is not a valid option.".format(model_name))
     return model
 
 
