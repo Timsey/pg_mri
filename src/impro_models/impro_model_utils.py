@@ -1,8 +1,9 @@
 import torch
 import shutil
 
-from .simple_convmask_model import build_impro_conv_mask_model
-from .simple_conv_model import build_impro_conv_model
+from .convpool_model import build_impro_convpool_model
+from .convpoolmask_model import build_impro_convpoolmask_model
+from .convbottle_model import build_impro_convbottle_model
 
 
 def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_best):
@@ -35,10 +36,12 @@ def load_impro_model(checkpoint_file):
 
 def build_impro_model(args):
     model_name = args.impro_model_name
-    if model_name == 'conv_mask':
-        model = build_impro_conv_mask_model(args)
-    elif model_name == 'conv':
-        model = build_impro_conv_model(args)
+    if model_name == 'convpool':
+        model = build_impro_convpool_model(args)
+    elif model_name == 'convpoolmask':
+        model = build_impro_convpoolmask_model(args)
+    elif model_name == 'convbottle':
+        model = build_impro_convbottle_model(args)
     else:
         raise ValueError("Impro model name {} is not a valid option.".format(model_name))
     return model

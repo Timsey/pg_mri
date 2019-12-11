@@ -274,7 +274,7 @@ def apply_mask(data, mask_func, seed=None):
 def create_datasets(args):
     train_mask = MaskFunc(args.center_fractions, args.accelerations)
     dev_mask = MaskFunc(args.center_fractions, args.accelerations)
-    test_mask = MaskFunc(args.center_fractions, args.accelerations)
+    # test_mask = MaskFunc(args.center_fractions, args.accelerations)
 
     # We cannot use the original dataset when active learning, since we have no test data then.
     train_path = args.data_path / f'{args.challenge}_train_al'
@@ -298,15 +298,15 @@ def create_datasets(args):
         challenge=args.challenge,
         acquisition=args.acquisition
     )
-    test_data = SliceData(
-        root=args.data_path / f'{args.challenge}_test_al',
-        transform=DataTransform(test_mask, args.resolution, args.challenge, use_seed=True),
-        sample_rate=args.sample_rate,
-        max_slices=args.max_test_slices,
-        challenge=args.challenge,
-        acquisition=args.acquisition
-    )
-    return dev_data, train_data, test_data
+    # test_data = SliceData(
+    #     root=args.data_path / f'{args.challenge}_test_al',
+    #     transform=DataTransform(test_mask, args.resolution, args.challenge, use_seed=True),
+    #     sample_rate=args.sample_rate,
+    #     max_slices=args.max_test_slices,
+    #     challenge=args.challenge,
+    #     acquisition=args.acquisition
+    # )
+    return dev_data, train_data, None  # test_data
 
 
 def create_data_loaders(args):

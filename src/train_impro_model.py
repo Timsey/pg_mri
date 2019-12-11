@@ -251,7 +251,7 @@ def create_arg_parser():
                         help='Whether to use mask parameter settings (acceleration and center fraction) that the '
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
 
-    parser.add_argument('--impro-model-name', choices=['conv', 'conv_mask'], required=True,
+    parser.add_argument('--impro-model-name', choices=['convpool', 'convpoolmask', 'convbottle'], required=True,
                         help='Improvement model name (if using resume, must correspond to model at the '
                              'improvement model checkpoint.')
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
@@ -269,13 +269,15 @@ def create_arg_parser():
     parser.add_argument('--num-pools', type=int, default=4, help='Number of ConvNet pooling layers. Note that setting '
                         'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
                         'layer size post-flattening.')
-    parser.add_argument('--of-which-four-pools', type=int, default=2, help='Number of of the num-pools pooling layers '
-                        'that should 4x4 pool instead of 2x2 pool. E.g. if 2, first 2 layers will 4x4 pool, rest will '
-                        '2x2 pool.')
+    parser.add_argument("--of-which-four-pools', type=int, default=2, help='Number of of the num-pools pooling layers "
+                        "that should 4x4 pool instead of 2x2 pool. E.g. if 2, first 2 layers will 4x4 pool, rest will "
+                        "2x2 pool. Only used for 'pool' models.")
     parser.add_argument('--drop-prob', type=float, default=0, help='Dropout probability')
     parser.add_argument('--num-chans', type=int, default=32, help='Number of ConvNet channels')
     parser.add_argument('--in-chans', default=2, type=int, help='Number of image input channels'
                         'E.g. set to 2 if input is reconstruction and uncertainty map')
+    parser.add_argument('--out-chans', type=int, default=32, help='Number of ConvNet output channels: these are input '
+                        "for the FC layers that follow. Only used for 'bottle' models.")
 
     parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
     parser.add_argument('--krow-batch-size', default=64, type=int, help='Batch size for target creation loop')

@@ -4,8 +4,11 @@
       <w>backpropagate</w>
       <w>chans</w>
       <w>conv</w>
+      <w>convbottle</w>
       <w>convmask</w>
       <w>convolutional</w>
+      <w>convpool</w>
+      <w>convpoolmask</w>
       <w>corpd</w>
       <w>corpdfs</w>
       <w>cuda</w>

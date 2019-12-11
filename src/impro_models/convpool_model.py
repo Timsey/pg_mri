@@ -47,7 +47,7 @@ class ConvBlock(nn.Module):
             f'drop_prob={self.drop_prob}, max_pool_size={self.pool_size})'
 
 
-class ImproMaskModel(nn.Module):
+class ConvPoolModel(nn.Module):
     def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob):
         """
         Args:
@@ -85,27 +85,16 @@ class ImproMaskModel(nn.Module):
             if i == self.four_pools:  # First two layers use 4x4 pooling, rest use 2x2 pooling
                 self.pool_size = 2
             self.down_sample_layers += [ConvBlock(ch, ch * 2, drop_prob, pool_size=self.pool_size)]
+            # Keep track of number of output neurons
             self.flattened_size = self.flattened_size * 2 // self.pool_size ** 2
             ch *= 2
 
-        self.fc_recon = nn.Sequential(
+        self.fc_out = nn.Sequential(
             nn.Linear(in_features=self.flattened_size, out_features=1024),
             nn.LeakyReLU(),
             nn.Linear(in_features=1024, out_features=512),
             nn.LeakyReLU(),
-        )
-
-        self.mask_encoding = nn.Sequential(
-            nn.Linear(in_features=resolution, out_features=resolution),
-            nn.LeakyReLU(),
-            nn.Linear(in_features=resolution, out_features=resolution),
-            nn.LeakyReLU(),
-        )
-
-        self.fc_out = nn.Sequential(
-            nn.Linear(in_features=512 + resolution, out_features=256 + resolution // 2),
-            nn.LeakyReLU(),
-            nn.Linear(in_features=256 + resolution // 2, out_features=resolution)
+            nn.Linear(in_features=512, out_features=resolution)
         )
 
     def forward(self, image, mask):
@@ -124,21 +113,13 @@ class ImproMaskModel(nn.Module):
         # Apply down-sampling layers
         for layer in self.down_sample_layers:
             image_emb = layer(image_emb)
-        image_emb = self.fc_recon(image_emb.flatten(start_dim=1))  # flatten all but batch dimension
+        image_emb = self.fc_out(image_emb.flatten(start_dim=1))  # flatten all but batch dimension
         assert len(image_emb.shape) == 2
-
-        # Mask embedding
-        mask_emb = self.mask_encoding(mask)
-        assert len(image_emb.shape) == 2
-
-        # First dimension is batch dimension
-        # Concatenate among second (last) dimension
-        emb = torch.cat((image_emb, mask_emb), dim=-1)
-        return self.fc_out(emb)
+        return image_emb
 
 
-def build_impro_conv_mask_model(args):
-    model = ImproMaskModel(
+def build_impro_convpool_model(args):
+    model = ConvPoolModel(
         resolution=args.resolution,
         in_chans=args.in_chans,
         chans=args.num_chans,
