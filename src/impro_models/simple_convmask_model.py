@@ -48,7 +48,7 @@ class ConvBlock(nn.Module):
 
 
 class ImproMaskModel(nn.Module):
-    def __init__(self, resolution, in_chans, chans, num_pool_layers, drop_prob):
+    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob):
         """
         Args:
             in_chans (int): Number of channels in the input to the U-Net model.
@@ -63,6 +63,7 @@ class ImproMaskModel(nn.Module):
         self.in_chans = in_chans
         self.chans = chans
         self.num_pool_layers = num_pool_layers
+        self.four_pools = four_pools
         self.drop_prob = drop_prob
 
         # Size of image encoding after flattening of convolutional output
@@ -81,7 +82,7 @@ class ImproMaskModel(nn.Module):
         self.down_sample_layers = nn.ModuleList([])
         ch = chans
         for i in range(num_pool_layers):
-            if i == 0:  # First two layers use 4x4 pooling, rest use 2x2 pooling  # TODO: this is badly hardcoded
+            if i == self.four_pools:  # First two layers use 4x4 pooling, rest use 2x2 pooling
                 self.pool_size = 2
             self.down_sample_layers += [ConvBlock(ch, ch * 2, drop_prob, pool_size=self.pool_size)]
             self.flattened_size = self.flattened_size * 2 // self.pool_size ** 2
@@ -142,6 +143,7 @@ def build_impro_conv_mask_model(args):
         in_chans=args.in_chans,
         chans=args.num_chans,
         num_pool_layers=args.num_pools,
+        four_pools=args.of_which_four_pools,
         drop_prob=args.drop_prob
     ).to(args.device)
     return model

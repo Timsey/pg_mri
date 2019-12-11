@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 
-# Importing Arguments is required for loading of reconstruction model
+# Importing Arguments is required for loading of Gauss reconstruction model
 from src.recon_models.unet_dist_model import Arguments
 
 from src.helpers.metrics import ssim
@@ -269,6 +269,9 @@ def create_arg_parser():
     parser.add_argument('--num-pools', type=int, default=4, help='Number of ConvNet pooling layers. Note that setting '
                         'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
                         'layer size post-flattening.')
+    parser.add_argument('--of-which-four-pools', type=int, default=2, help='Number of of the num-pools pooling layers '
+                        'that should 4x4 pool instead of 2x2 pool. E.g. if 2, first 2 layers will 4x4 pool, rest will '
+                        '2x2 pool.')
     parser.add_argument('--drop-prob', type=float, default=0, help='Dropout probability')
     parser.add_argument('--num-chans', type=int, default=32, help='Number of ConvNet channels')
     parser.add_argument('--in-chans', default=2, type=int, help='Number of image input channels'
