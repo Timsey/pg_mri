@@ -263,6 +263,9 @@ def create_arg_parser():
                         help='Whether to use mask parameter settings (acceleration and center fraction) that the '
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
 
+    parser.add_argument('--impro-model-name', choices=['conv', 'conv_mask'], required=True,
+                        help='Improvement model name (if using resume, must correspond to model at the '
+                             'improvement model checkpoint.')
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
     # argument use-recon-mask-params above.
     parser.add_argument('--accelerations', nargs='+', default=[4, 6, 8, 10], type=int,
