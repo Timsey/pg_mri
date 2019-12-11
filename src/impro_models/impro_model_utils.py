@@ -36,9 +36,9 @@ def load_impro_model(checkpoint_file):
 def build_impro_model(args):
     model_name = args.impro_model_name
     if model_name == 'conv_mask':
-        model = build_impro_conv_model(args)
-    elif model_name == 'conv':
         model = build_impro_conv_mask_model(args)
+    elif model_name == 'conv':
+        model = build_impro_conv_model(args)
     else:
         raise ValueError("Impro model name {} is not a valid option.".format(model_name))
     return model

@@ -81,6 +81,8 @@ class ImproModel(nn.Module):
         self.down_sample_layers = nn.ModuleList([])
         ch = chans
         for i in range(num_pool_layers):
+            if i == 0:  # First two layers use 4x4 pooling, rest use 2x2 pooling  # TODO: this is badly hardcoded
+                self.pool_size = 2
             self.down_sample_layers += [ConvBlock(ch, ch * 2, drop_prob, pool_size=self.pool_size)]
             # Keep track of number of output neurons
             self.flattened_size = self.flattened_size * 2 // self.pool_size ** 2

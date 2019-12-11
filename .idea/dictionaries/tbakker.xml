@@ -4,6 +4,7 @@
       <w>backpropagate</w>
       <w>chans</w>
       <w>conv</w>
+      <w>convmask</w>
       <w>convolutional</w>
       <w>corpd</w>
       <w>corpdfs</w>
