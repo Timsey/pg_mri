@@ -2,6 +2,7 @@
   <dictionary name="tbakker">
     <words>
       <w>backpropagate</w>
+      <w>batchnorm</w>
       <w>chans</w>
       <w>conv</w>
       <w>convbottle</w>
@@ -32,6 +33,7 @@
       <w>ssim</w>
       <w>subsampling</w>
       <w>topk</w>
+      <w>unacq</w>
       <w>unacquired</w>
       <w>unet</w>
       <w>unnormalisation</w>

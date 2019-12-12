@@ -91,13 +91,15 @@ class ConvPoolModel(nn.Module):
 
         self.fc_out = nn.Sequential(
             nn.Linear(in_features=self.flattened_size, out_features=1024),
+            # nn.BatchNorm1d(num_features=1024),
             nn.LeakyReLU(),
             nn.Linear(in_features=1024, out_features=512),
+            # nn.BatchNorm1d(num_features=512),
             nn.LeakyReLU(),
             nn.Linear(in_features=512, out_features=resolution)
         )
 
-    def forward(self, image, mask):
+    def forward(self, image):
         """
         Args:
             image (torch.Tensor): Input tensor of shape [batch_size, self.in_chans, height, width]

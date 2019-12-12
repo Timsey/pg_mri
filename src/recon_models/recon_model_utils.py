@@ -6,10 +6,10 @@ from src.recon_models.unet_kengal_model import build_kengal_model
 
 
 def recon_model_forward_pass(args, recon_model, zf):
-    model_name = recon_model.__class__.__name__
-    if args.recon_model_name == 'kengal_laplace':
+    model_name = args.recon_model_name
+    if model_name == 'kengal_laplace':
         output = recon_model(zf)
-    elif args.recon_model_name == 'dist_gauss':
+    elif model_name == 'dist_gauss':
         loc, logscale = recon_model(zf)
         output = torch.cat((loc, logscale), dim=1)
     else:
@@ -86,7 +86,7 @@ def acquire_new_zf_exp(k, mk, to_acquire):
 
 def acquire_new_zf_exp_batch(k, mk, to_acquire):
     # Expand masked kspace over channel dimension to prepare for adding all kspace rows to acquire
-    mk_exp = mk.unsqueeze(1).expand(-1, to_acquire.size(1), -1, -1, -1).clone()  # TODO: .clone() necessary here? Yes?
+    mk_exp = mk.expand(-1, to_acquire.size(1), -1, -1, -1).clone()  # TODO: .clone() necessary here? Yes?
     # Loop over slices in batch
     for sl, rows in enumerate(to_acquire):
         # Loop over indices to acquire

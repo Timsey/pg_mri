@@ -18,7 +18,8 @@ from src.helpers.utils import (add_mask_params, save_json, check_args_consistenc
                                count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
 from src.recon_models.recon_model_utils import acquire_new_zf_exp, recon_model_forward_pass, load_recon_model
-from src.impro_models.impro_model_utils import load_impro_model, build_impro_model, build_optim, save_model
+from src.impro_models.impro_model_utils import (load_impro_model, build_impro_model, build_optim, save_model,
+                                                impro_model_forward_pass)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,9 +29,10 @@ def create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, recon_
     recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
 
-    # TODO: SSIM here
-    base_score = F.mse_loss(norm_recon, gt, reduction='none').mean(1).mean(1).mean(1)
-    # base_score = ssim(norm_loc, gt, size_average=False)  # TODO: Use norm here?
+    # base_score = F.mse_loss(norm_recon, gt, reduction='none').mean(1).mean(1).mean(1)
+    # TODO: data_range is computed over batch, but should be either per image, or single value for volume of images
+    #  maybe set it to 1e-4 instead of gt.max()?
+    base_score = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(1).mean(1).mean(1)
 
     # Create improvement targets for this batch
     target = torch.zeros((mask.size(0), mask.size(-2))).to(args.device)  # batch_size x resolution
@@ -63,8 +65,10 @@ def obtain_slice_target(args, sl, k, m, mk, recon_model, gt, base_score, target)
         batch_std = std_exp[j:j + args.krow_batch_size].unsqueeze(1)
         norm_batch_recon = batch_recon * batch_std + batch_mean  # TODO: Normalisation necessary?
         batch_gt = gt[sl, ...].expand(norm_batch_recon.size(0), -1, -1).unsqueeze(1)
-        batch_scores = F.mse_loss(norm_batch_recon, batch_gt, reduction='none').mean(1).mean(1).mean(1)
-        impros = (base_score[sl] - batch_scores) * 1e12
+        batch_scores = ssim(norm_batch_recon, batch_gt, size_average=False, data_range=1e-4).mean(1).mean(1).mean(1)
+        impros = batch_scores - base_score[sl]
+        # batch_scores = F.mse_loss(norm_batch_recon, batch_gt, reduction='none').mean(1).mean(1).mean(1)
+        # impros = (base_score[sl] - batch_scores) * 1e12
         target[sl, to_acquire[j:j + args.krow_batch_size]] = impros
     if args.verbose >= 3:
         print('Time to create target for a single slice: {:.3f}s'.format(time.perf_counter() - st))
@@ -72,11 +76,14 @@ def obtain_slice_target(args, sl, k, m, mk, recon_model, gt, base_score, target)
 
 
 def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer):
+    # TODO: try batchnorm in FC layers
     model.train()
     avg_loss = 0.
     start_epoch = start_iter = time.perf_counter()
     global_step = epoch * len(train_loader)
     for iter, data in enumerate(train_loader):
+        # TODO: Do we train one step per sample, or take multiple steps?
+        #  Will this work with batching, or do we need to do one sample at a time?
         kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
@@ -95,7 +102,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # Get impro model input and target: this step requires many forward passes through the reconstruction model
         target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output)
         # Improvement model output
-        output = model(recon_output, mask.squeeze())
+        output = impro_model_forward_pass(args, model, recon_output, mask.squeeze())
 
         # Compute loss and backpropagate
         loss = F.l1_loss(output, target)  # TODO: Think about loss function
@@ -141,7 +148,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer):
             # Get impro model input and target: this step requires many forward passes through the reconstruction model
             target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output)
             # Improvement model output
-            output = model(recon_output, mask.squeeze())
+            output = impro_model_forward_pass(args, model, recon_output, mask.squeeze())
 
             # Compute loss and backpropagate
             loss = F.l1_loss(output, target)  # TODO: Think about loss function
@@ -269,7 +276,7 @@ def create_arg_parser():
     parser.add_argument('--num-pools', type=int, default=4, help='Number of ConvNet pooling layers. Note that setting '
                         'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
                         'layer size post-flattening.')
-    parser.add_argument("--of-which-four-pools', type=int, default=2, help='Number of of the num-pools pooling layers "
+    parser.add_argument('--of-which-four-pools', type=int, default=2, help='Number of of the num-pools pooling layers '
                         "that should 4x4 pool instead of 2x2 pool. E.g. if 2, first 2 layers will 4x4 pool, rest will "
                         "2x2 pool. Only used for 'pool' models.")
     parser.add_argument('--drop-prob', type=float, default=0, help='Dropout probability')

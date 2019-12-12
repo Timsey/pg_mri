@@ -18,48 +18,61 @@ from src.helpers.utils import (add_mask_params, save_json, check_args_consistenc
                                count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
 from src.recon_models.recon_model_utils import acquire_new_zf_exp_batch, recon_model_forward_pass, load_recon_model
-from src.impro_models.impro_model_utils import load_impro_model, build_impro_model, build_optim, save_model
+from src.impro_models.impro_model_utils import (load_impro_model, build_impro_model, build_optim, save_model,
+                                                impro_model_forward_pass)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 def create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, recon_output,
-                        eps=1e-2, k=10):
+                        eps=.5, k=10):
     recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
 
     # TODO: SSIM here
     # shape = batch
-    base_score = F.mse_loss(norm_recon, gt, reduction='none').mean(1).mean(1).mean(1)
-    # base_score = ssim(norm_loc, gt, size_average=False)  # TODO: Use norm here?
+
+    # base_score = F.mse_loss(norm_recon, gt, reduction='none').mean(-1).mean(-1)
+    base_score = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)  # keep channel dim = 1
 
     # Rows than can be acquired
-    unacquired = (mask[:, 0, :, 0] == 0).nonzero()
-
+    unacquired = (mask.squeeze() == 0)
     # Create improvement targets for this batch
     target = torch.zeros((mask.size(0), mask.size(-2))).to(args.device)  # batch_size x resolution
-
     # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
-    output = model(recon_output, mask.squeeze())
+    output = impro_model_forward_pass(args, model, recon_output, mask.squeeze())
 
+    # shape = batch x k
     _, topk_inds = torch.topk(output, k, dim=1)  # TODO: filter on unacquired?
-    replace = (eps > torch.rand(k))  # which of the top k rows to replace with random rows (binary mask)
-    replace_inds = replace.nonzero()  # which of the top k rows to replace with random rows (indices)
-    # Initialise output to train for
+
+    # Initialise output to train for: this tensor will be filled with some of the impro model outputs, such that we
+    # only train for those outputs, and ignore the rest.
+    # Another way to do this would be to use the full output, and have the target be equal to output except for a
+    # select few. This will lead to gradients of 0, but will still try to backpropagate those gradients, resulting
+    # in more computation.
     output_train = torch.zeros_like(output)
-    # Set topk values in output
-    output_train[topk_inds] = output[topk_inds]
+
     # Now set random rows to overwrite topk values and inds (epsilon greedily)
     for i in range(mask.size(0)):
-        # Which random rows to pick (without replacement here)  TODO: with replacement instead?
-        randrow_inds = torch.randperm(unacquired[i, :])[replace[i, :].sum():]
+        # Set topk values in output
+        sl_topk_inds = topk_inds[i, :]
+        output_train[i, sl_topk_inds] = output[i, sl_topk_inds]
+        # Some of these will be replaced by random rows: select which ones to replace
+        topk_replace = (eps > torch.rand(k))  # which of the top k rows to replace with random rows (binary mask)
+        topk_replace_inds = topk_replace.nonzero().flatten()  # which of the top k rows to replace with random rows
+        replace_inds = sl_topk_inds[topk_replace_inds]  # which output rows to replace with random rows
+        # Which random rows to pick to replace the some of the topk rows (sampled without replacement here)
+        # TODO: with replacement instead?
+        sl_unacq = unacquired[i, :].nonzero().flatten()
+        sl_unacq_shuffle = sl_unacq[torch.randperm(len(sl_unacq))]  # Shuffle potential rows to acquire for this slice
+        randrow_inds = sl_unacq_shuffle[:topk_replace.sum()]  # Pick the first n, where n is the number to replace
         # Set training output for random rows (we want to train these rows, replacing a few of the topk rows)
         output_train[i, randrow_inds] = output[i, randrow_inds]
         # Replace training output for nongreedy rows (we don't want to train these rows this iteration)
-        output_train[i, replace_inds[i]] = 0
+        output_train[i, replace_inds] = 0
         # Replace indices similarly, so that we know which rows to compute true targets for
-        topk_inds[i, replace_inds[i]] = randrow_inds
+        topk_inds[i, topk_replace_inds] = randrow_inds
 
     # TODO: DEBUG
     # shape = batch x rows = k x res x res
@@ -74,20 +87,26 @@ def create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     recons = recons.view(mask.size(0), k, mask.size(-2), mask.size(-2))
     norm_recons = recons * std_exp + mean_exp  # TODO: Normalisation necessary?
     gt = gt.expand(-1, k, -1, -1)
-    # shape = batch x rows
-    scores = F.mse_loss(norm_recons, gt, reduction='none').mean(1).mean(1)
-    impros = (base_score - scores) * 1e12
-    # shape = batch x rows
-    target[topk_inds] = impros
+    # scores = batch x rows (channels), base_score = batch x 1
+    scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
+    impros = scores - base_score
+    # scores = F.mse_loss(norm_recons, gt, reduction='none').mean(-1).mean(-1)
+    # impros = (base_score.unsqueeze(1) - scores) * 1e12
+    # target = batch x rows, topk_inds and impros = batch x k
+    for j, sl_topk_inds in enumerate(topk_inds):
+        target[j, sl_topk_inds] = impros[j, :]
     return target
 
 
 def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer):
+    # TODO: try batchnorm in FC layers
     model.train()
     avg_loss = 0.
     start_epoch = start_iter = time.perf_counter()
     global_step = epoch * len(train_loader)
     for iter, data in enumerate(train_loader):
+        # TODO: Do we train one step per sample, or take multiple steps?
+        #  Will this work with batching, or do we need to do one sample at a time?
         kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
@@ -107,7 +126,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
                                      recon_model, recon_output)
         # Improvement model output
-        output = model(recon_output, mask.squeeze())
+        output = impro_model_forward_pass(args, model, recon_output, mask.squeeze())
 
         # Compute loss and backpropagate
         loss = F.l1_loss(output, target)  # TODO: Think about loss function
@@ -130,36 +149,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
 
 def evaluate(args, epoch, recon_model, model, dev_loader, writer):
-    model.eval()
-    losses = []
-    start = time.perf_counter()
-    with torch.no_grad():
-        for _, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
-            # TODO: Maybe normalisation unnecessary for SSIM target?
-            # shape after unsqueeze = batch x channel x columns x rows x complex
-            kspace = kspace.unsqueeze(1).to(args.device)
-            masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
-            mask = mask.unsqueeze(1).to(args.device)
-            # shape after unsqueeze = batch x channel x columns x rows
-            zf = zf.unsqueeze(1).to(args.device)
-            gt = gt.unsqueeze(1).to(args.device)
-            mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            gt = gt * std + mean
-
-            # Base reconstruction model forward pass
-            recon_output = recon_model_forward_pass(args, recon_model, zf)
-            # Get impro model input and target: this step requires many forward passes through the reconstruction model
-            target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output)
-            # Improvement model output
-            output = model(recon_output, mask.squeeze())
-
-            # Compute loss and backpropagate
-            loss = F.l1_loss(output, target)  # TODO: Think about loss function
-            losses.append(loss.item())
-        writer.add_scalar('Dev_Loss', np.mean(losses), epoch)
-    return np.mean(losses), time.perf_counter() - start
+    # TODO: implement (maybe same as for non Q training?)
+    pass
 
 
 def visualise(args, epoch, model, display_loader, writer):
@@ -223,17 +214,17 @@ def main(args):
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer)
-        dev_loss, dev_time = evaluate(args, epoch, recon_model, model, dev_loader, writer)
-        # visualise(args, epoch, model, display_loader, writer)
-
-        is_new_best = dev_loss < best_dev_loss
-        best_dev_loss = min(best_dev_loss, dev_loss)
-        save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
-        logging.info(
-            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.4g} '
-            f'DevLoss = {dev_loss:.4g} TrainTime = {train_time:.4f}s DevTime = {dev_time:.4f}s',
-        )
-        # save_model(args, args.run_dir, epoch, model, optimiser, None, False)
+        # dev_loss, dev_time = evaluate(args, epoch, recon_model, model, dev_loader, writer)
+        # # visualise(args, epoch, model, display_loader, writer)
+        #
+        # is_new_best = dev_loss < best_dev_loss
+        # best_dev_loss = min(best_dev_loss, dev_loss)
+        # save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
+        # logging.info(
+        #     f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.4g} '
+        #     f'DevLoss = {dev_loss:.4g} TrainTime = {train_time:.4f}s DevTime = {dev_time:.4f}s',
+        # )
+        save_model(args, args.run_dir, epoch, model, optimiser, None, False)
     writer.close()
 
 
@@ -281,7 +272,7 @@ def create_arg_parser():
     parser.add_argument('--num-pools', type=int, default=4, help='Number of ConvNet pooling layers. Note that setting '
                         'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
                         'layer size post-flattening.')
-    parser.add_argument("--of-which-four-pools', type=int, default=2, help='Number of of the num-pools pooling layers "
+    parser.add_argument('--of-which-four-pools', type=int, default=2, help='Number of of the num-pools pooling layers '
                         "that should 4x4 pool instead of 2x2 pool. E.g. if 2, first 2 layers will 4x4 pool, rest will "
                         "2x2 pool. Only used for 'pool' models.")
     parser.add_argument('--drop-prob', type=float, default=0, help='Dropout probability')

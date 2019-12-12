@@ -6,6 +6,20 @@ from .convpoolmask_model import build_impro_convpoolmask_model
 from .convbottle_model import build_impro_convbottle_model
 
 
+def impro_model_forward_pass(args, impro_model, channels, mask):
+    model_name = args.impro_model_name
+    if model_name == 'convpool':
+        output = impro_model(channels)
+    elif model_name == 'convpoolmask':
+        output = impro_model(channels, mask)
+    elif model_name == 'convbottle':
+        output = impro_model(channels)
+    else:
+        raise ValueError('Model type {} is not supported'.format(model_name))
+    # Output of size batch x channel x resolution x resolution
+    return output
+
+
 def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_best):
     torch.save(
         {

@@ -94,7 +94,7 @@ class ConvBottleModel(nn.Module):
             nn.Linear(in_features=512, out_features=resolution)
         )
 
-    def forward(self, image, mask):
+    def forward(self, image):
         """
         Args:
             image (torch.Tensor): Input tensor of shape [batch_size, self.in_chans, height, width]
