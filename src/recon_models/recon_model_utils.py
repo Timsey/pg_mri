@@ -73,6 +73,19 @@ def acquire_new_zf(full_kspace, masked_kspace, next_row):
     return zero_filled, mean, std
 
 
+def acquire_new_zf_batch(full_kspace, batch_masked_kspace, batch_next_rows):
+    # shape = batch x 1 x res = col x res = row x 2
+    batch_cloned_masked_kspace = batch_masked_kspace.clone()
+
+    # Acquire row for all samples in the batch
+    # shape = (batch_dim, column, row, complex)
+    for sl, next_row in enumerate(batch_next_rows):
+        batch_cloned_masked_kspace[sl, :, :, next_row, :] = full_kspace[sl, :, :, next_row, :]
+
+    zero_filled, mean, std = get_new_zf(batch_cloned_masked_kspace)
+    return zero_filled, mean, std
+
+
 def acquire_new_zf_exp(k, mk, to_acquire):
     # Expand masked kspace over channel dimension to prepare for adding all kspace rows to acquire
     mk_exp = mk.expand(len(to_acquire), -1, -1, -1).clone()  # TODO: .clone() necessary here? Yes?

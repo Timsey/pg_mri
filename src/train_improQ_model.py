@@ -17,7 +17,8 @@ from src.helpers.metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
-from src.recon_models.recon_model_utils import acquire_new_zf_exp_batch, recon_model_forward_pass, load_recon_model
+from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
+                                                recon_model_forward_pass, load_recon_model)
 from src.impro_models.impro_model_utils import (load_impro_model, build_impro_model, build_optim, save_model,
                                                 impro_model_forward_pass)
 
@@ -26,13 +27,11 @@ logger = logging.getLogger(__name__)
 
 
 def create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, recon_output,
-                        eps=.5, k=10):
+                        eps=.1, k=10):
     recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
 
-    # TODO: SSIM here
     # shape = batch
-
     # base_score = F.mse_loss(norm_recon, gt, reduction='none').mean(-1).mean(-1)
     base_score = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)  # keep channel dim = 1
 
@@ -74,7 +73,6 @@ def create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
         # Replace indices similarly, so that we know which rows to compute true targets for
         topk_inds[i, topk_replace_inds] = randrow_inds
 
-    # TODO: DEBUG
     # shape = batch x rows = k x res x res
     zf_exp, mean_exp, std_exp = acquire_new_zf_exp_batch(kspace, masked_kspace, topk_inds)
     # shape = batch . rows x 1 x res x res
@@ -98,15 +96,19 @@ def create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     return target
 
 
-def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer):
+def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps):
     # TODO: try batchnorm in FC layers
     model.train()
-    avg_loss = 0.
+    avg_loss = [0. for _ in range(args.acquisition_steps)]
     start_epoch = start_iter = time.perf_counter()
     global_step = epoch * len(train_loader)
     for iter, data in enumerate(train_loader):
         # TODO: Do we train one step per sample, or take multiple steps?
         #  Will this work with batching, or do we need to do one sample at a time?
+        #  It seems we need to take multiple steps, as evaluation shows the model wants to select the same row
+        #  over and over, even if it has already sampled it (it has never seen the other cases where the improvement
+        #  is 0 for that row). Probably we'll need to use the bandit-like model to do this in a computationally
+        #  feasible way.
         kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
@@ -120,28 +122,57 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt = gt * std + mean
 
+        # TODO: train over multiple acquisition steps
         # Base reconstruction model forward pass
         recon_output = recon_model_forward_pass(args, recon_model, zf)
-        # Get impro model input and target: this step requires many forward passes through the reconstruction model
-        target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
-                                     recon_model, recon_output)
-        # Improvement model output
-        output = impro_model_forward_pass(args, model, recon_output, mask.squeeze())
 
-        # Compute loss and backpropagate
-        loss = F.l1_loss(output, target)  # TODO: Think about loss function
-        optimiser.zero_grad()
-        loss.backward()
-        optimiser.step()
+        # TODO: number of steps should be dependent on acceleration!
+        #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
+        at = time.perf_counter()
+        for step in range(args.acquisition_steps):
+            # Get impro model input and target: this step requires many forward passes through the reconstruction model
+            target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
+                                         recon_model, recon_output, eps=eps)
+            # Improvement model output
+            output = impro_model_forward_pass(args, model, recon_output, mask.squeeze())
 
-        avg_loss = 0.99 * avg_loss + 0.01 * loss.item() if iter > 0 else loss.item()
-        writer.add_scalar('TrainLoss', loss.item(), global_step + iter)
+            # Compute loss and backpropagate
+            # TODO: Do this every step?
+            #  Update model before grabbing next row? Or wait for all steps to be done and then update together?
+            #  Maybe use replay buffer type strategy here? Requires too much memory (need to save all gradients)?
+            loss = F.l1_loss(output, target)  # TODO: Think about loss function
+            optimiser.zero_grad()
+            loss.backward()
+            optimiser.step()
+            avg_loss[step] = 0.99 * avg_loss[step] + 0.01 * loss.item() if iter > 0 else loss.item()
+            writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + iter)
+
+            # TODO: Sometimes the model will want to acquire a row that as already been acquired. This is good,
+            #  because it will learn that the actual target for this row is 0, and thus will stop doing this.
+            #  One potential issue is that, since no actual new row is acquired, this will keep happening until the
+            #  model stops selecting the already sampled row, or until we've taken all our acquisition steps for this
+            #  sample. This will bias the model training towards being aversive to sampling already sampled rows,
+            #  which is intuitively a good thing, but keep this in mind as a potential explanation for extreme
+            #  behaviour later.
+            # Acquire row for next step
+            pred_impro, next_rows = torch.max(output, dim=1)
+            zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
+            # Don't forget to change mask for impro_model (necessary if impro model uses mask)
+            for sl, next_row in enumerate(next_rows):
+                mask[sl, :, :, next_row, :] = 1.
+
+            # Get new reconstruction for batch
+            recon_output = recon_model_forward_pass(args, recon_model, zf)
+
+        if args.verbose >= 3:
+            print('Time to train single batch of size {} for {} steps: {:.3f}'.format(
+                args.batch_size, args.acquisition_steps, time.perf_counter() - at))
 
         if iter % args.report_interval == 0:
             logging.info(
                 f'Epoch = [{epoch:3d}/{args.num_epochs:3d}] '
                 f'Iter = [{iter:4d}/{len(train_loader):4d}] '
-                f'Loss = {loss.item():.4g} Avg Loss = {avg_loss:.4g} '
+                f'Avg Loss = {np.mean(avg_loss).item():.4g} '
                 f'Time = {time.perf_counter() - start_iter:.4f}s',
             )
         start_iter = time.perf_counter()
@@ -159,6 +190,7 @@ def visualise(args, epoch, model, display_loader, writer):
 
 
 def main(args):
+    args.trainQ = True
     # Reconstruction model
     recon_args, recon_model = load_recon_model(args)
     check_args_consistency(args, recon_args)
@@ -213,7 +245,13 @@ def main(args):
     # Training and evaluation
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
-        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer)
+        # eps decays a factor e after num_epochs / eps_decay_rate epochs: i.e. after 1/eps_decay_rate of all epochs
+        # This way, the same factor decay happens after the same fraction of epochs, for various values for num_epochs
+        # E.g. if num_epochs = 10, we decay a factor e after 2 epochs: 1/5th of all epochs
+        # E.g. if num_epochs = 50, we decay a factor e after 10 epochs: 1/5th of all epochs
+        eps = np.exp(np.log(args.start_eps) - args.eps_decay_rate * epoch / args.num_epochs)
+        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps)
+
         # dev_loss, dev_time = evaluate(args, epoch, recon_model, model, dev_loader, writer)
         # # visualise(args, epoch, model, display_loader, writer)
         #
@@ -269,6 +307,7 @@ def create_arg_parser():
                              'of acceleration and reciprocals-in-center will be used during training (every epoch a '
                              'volume randomly gets assigned an acceleration and center fraction.')
 
+    parser.add_argument('--acquisition-steps', default=10, type=int, help='Acquisition steps to train for per image.')
     parser.add_argument('--num-pools', type=int, default=4, help='Number of ConvNet pooling layers. Note that setting '
                         'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
                         'layer size post-flattening.')
@@ -292,6 +331,12 @@ def create_arg_parser():
                         help='Multiplicative factor of learning rate decay')
     parser.add_argument('--weight-decay', type=float, default=0,
                         help='Strength of weight decay regularization')
+
+    parser.add_argument('--start-eps', type=float, default=0.001, help='Epsilon to start with. This determines '
+                        'the trade-off between training on rows the improvement networks suggests, and training on '
+                        'randomly sampled rows.')
+    parser.add_argument('--eps-decay-rate', type=float, default=0.001, help='Epsilon decay rate. Epsilon decays a '
+                        'factor e after a fraction 1/eps_decay_rate of all epochs have passed.')
 
     parser.add_argument('--report-interval', type=int, default=100, help='Period of loss reporting')
     parser.add_argument('--data-parallel', action='store_true',

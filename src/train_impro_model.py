@@ -84,6 +84,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     for iter, data in enumerate(train_loader):
         # TODO: Do we train one step per sample, or take multiple steps?
         #  Will this work with batching, or do we need to do one sample at a time?
+        #  It seems we need to take multiple steps, as evaluation shows the model wants to select the same row
+        #  over and over, even if it has already sampled it (it has never seen the other cases where the improvement
+        #  is 0 for that row). Probably we'll need to use the bandit-like model to do this in a computationally
+        #  feasible way.
         kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
@@ -163,6 +167,7 @@ def visualise(args, epoch, model, display_loader, writer):
 
 
 def main(args):
+    args.trainQ = False
     # Reconstruction model
     recon_args, recon_model = load_recon_model(args)
     check_args_consistency(args, recon_args)
