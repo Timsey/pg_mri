@@ -28,9 +28,11 @@
       <w>multicoil</w>
       <w>nongreedy</w>
       <w>pretrained</w>
+      <w>pytorch</w>
       <w>randrow</w>
       <w>singlecoil</w>
       <w>ssim</w>
+      <w>ssims</w>
       <w>subsampling</w>
       <w>topk</w>
       <w>unacq</w>

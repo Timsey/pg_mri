@@ -106,7 +106,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # Get impro model input and target: this step requires many forward passes through the reconstruction model
         target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output)
         # Improvement model output
-        output = impro_model_forward_pass(args, model, recon_output, mask.squeeze())
+        output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
 
         # Compute loss and backpropagate
         loss = F.l1_loss(output, target)  # TODO: Think about loss function
@@ -152,9 +152,9 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer):
             # Get impro model input and target: this step requires many forward passes through the reconstruction model
             target = create_batch_target(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, recon_output)
             # Improvement model output
-            output = impro_model_forward_pass(args, model, recon_output, mask.squeeze())
+            output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
 
-            # Compute loss and backpropagate
+            # Compute loss
             loss = F.l1_loss(output, target)  # TODO: Think about loss function
             losses.append(loss.item())
         writer.add_scalar('Dev_Loss', np.mean(losses), epoch)

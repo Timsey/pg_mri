@@ -99,12 +99,14 @@ def acquire_new_zf_exp(k, mk, to_acquire):
 
 def acquire_new_zf_exp_batch(k, mk, to_acquire):
     # Expand masked kspace over channel dimension to prepare for adding all kspace rows to acquire
-    mk_exp = mk.expand(-1, to_acquire.size(1), -1, -1, -1).clone()  # TODO: .clone() necessary here? Yes?
+    # TODO: did making the expand --> repeat change really make the difference? Nope, seems to give exact same
+    # mk_exp = mk.expand(-1, to_acquire.size(1), -1, -1, -1).clone()  # TODO: .clone() necessary here? Yes?
+    mk_exp = mk.repeat(1, to_acquire.size(1), 1, 1, 1)
     # Loop over slices in batch
     for sl, rows in enumerate(to_acquire):
         # Loop over indices to acquire
         for index, row in enumerate(rows):
-            mk_exp[sl, index, :, row.item(), :] = k[sl, :, row.item(), :]
+            mk_exp[sl, index, :, row.item(), :] = k[sl, 0, :, row.item(), :]
     # Obtain zero filled image from all new kspaces
     zero_filled_exp, mean_exp, std_exp = get_new_zf(mk_exp)
     return zero_filled_exp, mean_exp, std_exp
