@@ -33,7 +33,6 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
 
     # shape = batch
-    # base_score = F.mse_loss(norm_recon, gt, reduction='none').mean(-1).mean(-1)
     base_score = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)  # keep channel dim = 1
 
     # Create improvement targets for this batch
@@ -44,7 +43,6 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     #  the values we wanted to train (so the other entries would be zero (not important), and have no gradient).
     #  Unfortunately, PyTorch doesn't like it when we do in place operations to our output_train, because somehow
     #  the gradients get lost that way...
-    # target = torch.zeros((mask.size(0), mask.size(-2))).to(args.device)  # batch_size x resolution
     # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
     # squeeze mask such that batch dimension doesn't vanish if it's 1.
     output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
@@ -53,17 +51,6 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     # TODO: does output need to be detached? Since topk_inds are used to select which outputs to train, this may
     #  create a gradient loop.
     _, topk_inds = torch.topk(output.detach(), k, dim=1)  # TODO: filter on unacquired?
-    # _, topk_inds = torch.topk(output, k, dim=1)
-
-    # Rows than can be acquired
-    # unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
-
-    # Initialise output to train for: this tensor will be filled with some of the impro model outputs, such that we
-    # only train for those outputs, and ignore the rest.
-    # Another way to do this would be to use the full output, and have the target be equal to output except for a
-    # select few. This will lead to gradients of 0, but will still try to backpropagate those gradients, resulting
-    # in more computation.
-    # output_train = torch.zeros_like(output)
 
     # Now set random rows to overwrite topk values and inds (epsilon greedily)
     for i in range(mask.size(0)):  # Loop over slices in batch
@@ -71,58 +58,33 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
         topk_replace = (eps > torch.rand(k))  # which of the top k rows to replace with random rows (binary mask)
         topk_replace_inds = topk_replace.nonzero().flatten()  # which of the top k rows to replace with random rows
         # Which random rows to pick to replace the some of the topk rows (sampled without replacement here)
-        # TODO: with replacement instead?
-        # TODO: unacquired doesn't take into account the topk choices above, so it can happen that randrow_inds selects
-        #  an index that is already a topk index, in which case one of the topk indices is replaced with an index that
-        #  is also a topk index. In cases where that other topk index isn't replaced, this will lead to double values
-        #  in the eventual topk index list, resulting in one fewer value in output_train per double index.
-        #  ACTUALLY we can also compute targets for acquired rows: indeed this is useful, at least at the start.
-        # sl_unacq = unacquired[i, :].nonzero().flatten()
-        # # Potential extra acquisitions: all unacquired indices that are not in topk_inds
-        # sl_to_acquire = torch.tensor([idx for idx in sl_unacq if idx not in topk_inds[i, :]]).to(args.device)
-        # if sl_to_acquire.size(0) == 0:
-        #     continue
-        # Shuffle potential rows to acquire for this slice
-        # sl_unacq_shuffle = sl_to_acquire[torch.randperm(len(sl_to_acquire))]
-        # randrow_inds = sl_unacq_shuffle[:topk_replace.sum()]  # Pick the first n, where n is the number to replace
         row_options = torch.tensor([idx for idx in range(mask.size(-2)) if idx not in topk_inds[i, :]]).to(args.device)
         # Shuffle potential rows to acquire random rows (equal to the number of 1s in topk_replace)
         randrow_inds = row_options[torch.randperm(len(row_options))][:topk_replace.sum()].long()
-        # Replace indices similarly, so that we know which rows to compute true targets for
         # If there are not topk_replace.sum() rows left as options (for instance because we set k == resolution: this
         # would lead to 0 options left) then row_options has length less than topk_replace_inds. This means the below
-        # assignment will fail. Hence we clip the length of the latter.
-        # TODO: does this introduce a bias? Topk inds are highest scoring according to the model. If the model is any
-        #  good, this means we're removing rows that our models predicts will score less well from the topk_replace_inds
-        #  SO we should probably shuffle the topk_replace_inds before clipping. THEN we don't have to shuffle the
-        #  row options above anymore either? NOT SURE, FIGURE THIS OUT
+        # assignment will fail. Hence we clip the length of the latter. We shuffle the topk_replace_inds, so that we
+        # don't replace rows the model likes more often than those the model doesn't like (topk_replace_inds is ordered
+        # from highest scoring to lowest scoring.
         topk_replace_inds = topk_replace_inds[torch.randperm(len(topk_replace_inds))][:len(randrow_inds)]
         topk_inds[i, topk_replace_inds] = randrow_inds
-        # Use the 'topk_inds' to select rows to include in training
-        # output_train[i, topk_inds[i]] = output[i, topk_inds[i]]
 
+    # Acquire chosen rows, and compute the improvement target for each (batched)
     # shape = batch x rows = k x res x res
     zf_exp, mean_exp, std_exp = acquire_new_zf_exp_batch(kspace, masked_kspace, topk_inds)
-    # shape = batch . rows x 1 x res x res
+    # shape = batch . rows x 1 x res x res, so that we can run the forward model for all rows in the batch
     zf_input = zf_exp.view(mask.size(0) * k, 1, mask.size(-2), mask.size(-2))
     # shape = batch . rows x 2 x res x res
     recons_output = recon_model_forward_pass(args, recon_model, zf_input)
-    # shape = batch . rows x 1 x res x res
+    # shape = batch . rows x 1 x res x res, extract reconstruction to compute target
     recons = recons_output[:, 0:1, ...]
     # shape = batch x rows x res x res
     recons = recons.view(mask.size(0), k, mask.size(-2), mask.size(-2))
     norm_recons = recons * std_exp + mean_exp  # TODO: Normalisation necessary?
     gt = gt.expand(-1, k, -1, -1)
     # scores = batch x rows (channels), base_score = batch x 1
-    # TODO: Impros are generally negative at initialisation, which seems to suggest the reconstruction model does not
-    #  know very well how to deal zfs constructed from masks corresponding to a particular acceleration plus a single
-    #  extra row. Impros get more and more negative the more we sample...
-    #  FIXED: Problem was in indexing: topk_inds are not ordered on row, so neither are recons
-    #  but scores create the target
     scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
     impros = scores - base_score
-    # scores = F.mse_loss(norm_recons, gt, reduction='none').mean(-1).mean(-1)
-    # impros = (base_score.unsqueeze(1) - scores) * 1e12
     # target = batch x rows, topk_inds and impros = batch x k
     target = output.clone().detach()
     for j, sl_topk_inds in enumerate(topk_inds):
@@ -141,12 +103,6 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     start_epoch = start_iter = time.perf_counter()
     global_step = epoch * len(train_loader)
     for iter, data in enumerate(train_loader):
-        # TODO: Do we train one step per sample, or take multiple steps?
-        #  Will this work with batching, or do we need to do one sample at a time?
-        #  It seems we need to take multiple steps, as evaluation shows the model wants to select the same row
-        #  over and over, even if it has already sampled it (it has never seen the other cases where the improvement
-        #  is 0 for that row). Probably we'll need to use the bandit-like model to do this in a computationally
-        #  feasible way.
         kspace, masked_kspace, mask, zf, gt, mean, std, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
@@ -160,7 +116,6 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt = gt * std + mean
 
-        # TODO: train over multiple acquisition steps
         # Base reconstruction model forward pass
         recon_output = recon_model_forward_pass(args, recon_model, zf)
 
@@ -168,27 +123,6 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
         at = time.perf_counter()
         for step in range(args.acquisition_steps):
-            # TODO: check whether negative target computation is due to recon model not knowing what to do, by
-            #  evaluating its performance for accel 4 all in center (which it was trained on).
-            #  RESULT: it indeed seems that the reconstruction model is confused. When step = 9 (i.e. when accel
-            #  is 4 - which it was trained on - the targets it provides are positive improvements for almost all rows.
-            #  Then when step = 10, so an extra row is sampled (it hasn't seen this, similar to 0 =< step < 9) it
-            #  again provides negative values.
-            # sp = 9
-            # if step < sp:
-            #     next_rows = [49, 46, 34, 47, 33, 48, 32, 45, 31]
-            #     for sl in range(mask.size(0)):
-            #         mask[sl, :, :, next_rows[step], :] = 1.
-            #         masked_kspace[sl, :, :, next_rows[step], :] = kspace[sl, :, :, next_rows[step], :]
-            #     continue
-            # elif step == sp:
-            #     zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, torch.tensor(30).view(1))
-            #     for sl in range(mask.size(0)):
-            #         mask[sl, :, :, 30, :] = 1.
-            #         masked_kspace[sl, :, :, 30, :] = kspace[sl, :, :, 30, :]
-            #     recon_output = recon_model_forward_pass(args, recon_model, zf)
-
-            # TODO: something is wrong with this target computation when compared to the simple training script!
             # Get impro model input and target: this step requires many forward passes through the reconstruction model
             # Thus in this Q training strategy, we only compute targets for a few rows, and train on those rows
             target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
@@ -198,16 +132,6 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             # TODO: Do this every step?
             #  Update model before grabbing next row? Or wait for all steps to be done and then update together?
             #  Maybe use replay buffer type strategy here? Requires too much memory (need to save all gradients)?
-            # TODO: for newly trained reconstruction model, check here that:
-            #  step, target[0, (target - output)[0].nonzero().flatten()] gives good targets for all steps
-            #  mask[0, 0, 0, :, 0].nonzero().flatten()
-            # TODO: loss seems to grow over time. Even when increasing batch size, looking at all rows, and decreasing
-            #  learning rate. It seems something is still going wrong in target / output creation. In particular
-            #  the above nonzero target/output difference has different size than expected. FIXED: this had to do with
-            #  the selection process for unacquired rows that were also topk rows.
-            # TODO: targets really seem fine now, but loss still grows. The higher k, the slower it grows. The problem
-            #  persists for acquisition_steps = 1, and for doing a single gradient update after all acq steps.
-            #
             loss = F.l1_loss(output, target, reduction='none')  # TODO: Think about loss function
             loss = loss.mean()
             optimiser.zero_grad()
@@ -227,9 +151,6 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             #  which is intuitively a good thing, but keep this in mind as a potential explanation for extreme
             #  behaviour later.
             # Acquire row for next step: GREEDY
-            # First recompute forward pass after gradients for stability?
-            # with torch.no_grad():
-            #     output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
             pred_impro, next_rows = torch.max(output, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
             zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
             # Don't forget to change mask for impro_model (necessary if impro model uses mask)
