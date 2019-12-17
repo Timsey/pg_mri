@@ -87,9 +87,9 @@ class ConvBottleModel(nn.Module):
             )
 
         self.fc_out = nn.Sequential(
-            nn.Linear(in_features=self.flattened_size, out_features=1024),
+            nn.Linear(in_features=self.flattened_size, out_features=512),
             nn.LeakyReLU(),
-            nn.Linear(in_features=1024, out_features=512),
+            nn.Linear(in_features=512, out_features=512),
             nn.LeakyReLU(),
             nn.Linear(in_features=512, out_features=resolution)
         )

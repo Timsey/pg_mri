@@ -160,7 +160,6 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             for sl, next_row in enumerate(next_rows):
                 mask[sl, :, :, next_row, :] = 1.
                 masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
-
             # Get new reconstruction for batch
             recon_output = recon_model_forward_pass(args, recon_model, zf)
 
@@ -170,15 +169,15 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         if iter % args.report_interval == 0:
             if iter == 0:
-                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, args.report_interval *l * 1e2)
+                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, args.report_interval * l * 1e3)
                                       for i, l in enumerate(report_loss)])
             else:
-                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, l * 1e2) for i, l in enumerate(report_loss)])
+                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, l * 1e3) for i, l in enumerate(report_loss)])
             logging.info(
                 f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
                 f'Iter = [{iter:4d}/{len(train_loader):4d}], '
-                f'Time = {time.perf_counter() - start_iter:.4f}s, '
-                f'Avg Loss per step x1e2 = [{loss_str}] ',
+                f'Time = {time.perf_counter() - start_iter:.2f}s, '
+                f'Avg Loss per step (x1000) = [{loss_str}] ',
             )
             report_loss = [0. for _ in range(args.acquisition_steps)]
 
@@ -192,7 +191,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
     """
     model.eval()
     eps = 0  # Only evaluate for acquisitions the model actually wants to do
-    epoch_losses = [0. for _ in range(args.acquisition_steps)]
+    epoch_loss = [0. for _ in range(args.acquisition_steps)]
     start = time.perf_counter()
     with torch.no_grad():
         for _, data in enumerate(dev_loader):
@@ -219,7 +218,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                                                      recon_model, recon_output, eps, k)
                 # Improvement model output
                 loss = F.l1_loss(output, target)
-                epoch_losses[step] += loss.item() / len(dev_loader)
+                epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
 
                 # Greedy policy (size = batch)  # TODO: is this a good idea?
                 pred_impro, next_rows = torch.max(output, dim=1)
@@ -232,9 +231,9 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                 # Get new reconstruction for batch
                 recon_output = recon_model_forward_pass(args, recon_model, zf)
 
-        for step, loss in enumerate(epoch_losses):
+        for step, loss in enumerate(epoch_loss):
             writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
-    return np.mean(epoch_losses), time.perf_counter() - start
+    return np.mean(epoch_loss), time.perf_counter() - start
 
 
 def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
@@ -291,17 +290,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 # Get new reconstruction for batch
                 recon_output = recon_model_forward_pass(args, recon_model, zf)
                 norm_recon = recon_output[:, 0:1, :, :] * std + mean
-                # shape = batch
-                ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
-                assert ssim_val.size(1) == 1
-                # eventually shape = batch x al_steps
-                batch_ssims.append(ssim_val)
-            # shape = batch x al_steps
-            batch_ssims = torch.cat(batch_ssims, dim=1)
-            # shape = al_steps (average over all samples)
-            if iter > 0:
-                assert(ssim.size(0) == batch_ssims.size(1)), "Make sure same number of acquisition steps are used!"
-            ssims += batch_ssims.sum(0)
+                # shape = 1
+                ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean()
+                # eventually shape = al_steps
+                batch_ssims.append(ssim_val.item())
+            # shape = al_steps
+            ssims += np.array(batch_ssims) / len(dev_loader)
 
     for step, val in enumerate(ssims):
         writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
@@ -336,7 +330,11 @@ def main(args):
         best_dev_loss = 1e9
         start_epoch = 0
         # Create directory to store results in
-        args.run_dir = args.exp_dir / datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+        savestr = 'res{}_al{}_accel{}_{}_{}_{}_k{}'.format(args.resolution, args.accelerations, args.acquisition_steps,
+                                                           args.impro_model_name, args.recon_model_name,
+                                                           args.num_target_rows,
+                                                           datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
+        args.run_dir = args.exp_dir / savestr
         args.run_dir.mkdir(parents=True, exist_ok=False)
 
     # Logging
@@ -377,7 +375,6 @@ def main(args):
         # E.g. if num_epochs = 50, we decay a factor e after 10 epochs: 1/5th of all epochs
         eps = np.exp(np.log(args.start_eps) - args.eps_decay_rate * epoch / args.num_epochs)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k)
-
         # TODO: do both of these? Make more efficient?
         dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
         dev_ssim, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
@@ -387,9 +384,9 @@ def main(args):
         best_dev_loss = min(best_dev_loss, dev_loss)
         save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
         logging.info(
-            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.4g} '
-            f'DevLoss = {dev_loss:.4g} DevSSIM = {dev_ssim:.4g} TrainTime = {train_time:.4f}s '
-            f'DevLossTime = {dev_loss_time:.4f}s DevSSIMTime = {dev_loss_time:.4f}s',
+            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
+            f'DevLoss = {dev_loss:.3g} DevSSIM = {dev_ssim:.3g} TrainTime = {train_time:.2f}s '
+            f'DevLossTime = {dev_loss_time:.2f}s DevSSIMTime = {dev_loss_time:.2f}s',
         )
         # save_model(args, args.run_dir, epoch, model, optimiser, None, False)
     writer.close()
@@ -498,6 +495,11 @@ def create_arg_parser():
 
 
 if __name__ == '__main__':
+    # To fix known issue with h5py + multiprocessing
+    # See: https://discuss.pytorch.org/t/incorrect-data-using-h5py-with-dataloader/7079/2?u=ptrblck
+    import torch.multiprocessing
+    torch.multiprocessing.set_start_method('spawn')
+
     args = create_arg_parser().parse_args()
     random.seed(args.seed)
     np.random.seed(args.seed)

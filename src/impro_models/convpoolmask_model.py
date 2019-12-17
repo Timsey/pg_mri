@@ -89,23 +89,19 @@ class ConvPoolMaskModel(nn.Module):
             ch *= 2
 
         self.fc_recon = nn.Sequential(
-            nn.Linear(in_features=self.flattened_size, out_features=1024),
-            nn.LeakyReLU(),
-            nn.Linear(in_features=1024, out_features=512),
+            nn.Linear(in_features=self.flattened_size, out_features=512),
             nn.LeakyReLU(),
         )
 
         self.mask_encoding = nn.Sequential(
             nn.Linear(in_features=resolution, out_features=resolution),
             nn.LeakyReLU(),
-            nn.Linear(in_features=resolution, out_features=resolution),
-            nn.LeakyReLU(),
         )
 
         self.fc_out = nn.Sequential(
-            nn.Linear(in_features=512 + resolution, out_features=256 + resolution // 2),
+            nn.Linear(in_features=512 + resolution, out_features=512),
             nn.LeakyReLU(),
-            nn.Linear(in_features=256 + resolution // 2, out_features=resolution)
+            nn.Linear(in_features=512, out_features=resolution)
         )
 
     def forward(self, image, mask):

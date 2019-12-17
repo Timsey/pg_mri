@@ -1,6 +1,7 @@
 <component name="ProjectDictionaryState">
   <dictionary name="tbakker">
     <words>
+      <w>accel</w>
       <w>backpropagate</w>
       <w>batchnorm</w>
       <w>chans</w>
@@ -30,6 +31,7 @@
       <w>pretrained</w>
       <w>pytorch</w>
       <w>randrow</w>
+      <w>savestr</w>
       <w>singlecoil</w>
       <w>ssim</w>
       <w>ssims</w>
