@@ -48,7 +48,7 @@ class ConvBlock(nn.Module):
 
 
 class ConvPoolMaskModel(nn.Module):
-    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob):
+    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob, fc_size):
         """
         Args:
             in_chans (int): Number of channels in the input to the U-Net model.
@@ -65,6 +65,7 @@ class ConvPoolMaskModel(nn.Module):
         self.num_pool_layers = num_pool_layers
         self.four_pools = four_pools
         self.drop_prob = drop_prob
+        self.fc_size = fc_size
 
         # Size of image encoding after flattening of convolutional output
         # There are 1 + num_pool_layers blocks
@@ -89,7 +90,7 @@ class ConvPoolMaskModel(nn.Module):
             ch *= 2
 
         self.fc_recon = nn.Sequential(
-            nn.Linear(in_features=self.flattened_size, out_features=512),
+            nn.Linear(in_features=self.flattened_size, out_features=self.fc_size),
             nn.LeakyReLU(),
         )
 
@@ -99,9 +100,9 @@ class ConvPoolMaskModel(nn.Module):
         )
 
         self.fc_out = nn.Sequential(
-            nn.Linear(in_features=512 + resolution, out_features=512),
+            nn.Linear(in_features=self.fc_size + resolution, out_features=self.fc_size),
             nn.LeakyReLU(),
-            nn.Linear(in_features=512, out_features=resolution)
+            nn.Linear(in_features=self.fc_size, out_features=resolution)
         )
 
     def forward(self, image, mask):
@@ -140,6 +141,7 @@ def build_impro_convpoolmask_model(args):
         chans=args.num_chans,
         num_pool_layers=args.num_pools,
         four_pools=args.of_which_four_pools,
-        drop_prob=args.drop_prob
+        drop_prob=args.drop_prob,
+        fc_size=args.fc_size
     ).to(args.device)
     return model

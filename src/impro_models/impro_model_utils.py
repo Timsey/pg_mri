@@ -63,6 +63,8 @@ def build_impro_model(args):
 
 def build_optim(args, params):
     optimiser = torch.optim.Adam(params, args.lr, weight_decay=args.weight_decay)
+    # optimiser = torch.optim.SGD(params, args.lr, momentum=.9)
+    # optimiser = torch.optim.RMSprop(params, args.lr, weight_decay=args.weight_decay)
     return optimiser
 
 

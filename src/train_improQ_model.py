@@ -122,6 +122,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # TODO: number of steps should be dependent on acceleration!
         #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
         at = time.perf_counter()
+
         for step in range(args.acquisition_steps):
             # Get impro model input and target: this step requires many forward passes through the reconstruction model
             # Thus in this Q training strategy, we only compute targets for a few rows, and train on those rows
@@ -132,11 +133,13 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             # TODO: Do this every step?
             #  Update model before grabbing next row? Or wait for all steps to be done and then update together?
             #  Maybe use replay buffer type strategy here? Requires too much memory (need to save all gradients)?
-            loss = F.l1_loss(output, target, reduction='none')  # TODO: Think about loss function
+            loss = F.mse_loss(output, target, reduction='none')  # TODO: Think about loss function
             loss = loss.mean()
+
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
+
             epoch_loss[step] += loss.item() / len(train_loader)
             report_loss[step] += loss.item() / args.report_interval
             writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + iter)
@@ -169,15 +172,15 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         if iter % args.report_interval == 0:
             if iter == 0:
-                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, args.report_interval * l * 1e3)
+                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, args.report_interval * l * 1e6)
                                       for i, l in enumerate(report_loss)])
             else:
-                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, l * 1e3) for i, l in enumerate(report_loss)])
+                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, l * 1e6) for i, l in enumerate(report_loss)])
             logging.info(
                 f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
                 f'Iter = [{iter:4d}/{len(train_loader):4d}], '
                 f'Time = {time.perf_counter() - start_iter:.2f}s, '
-                f'Avg Loss per step (x1000) = [{loss_str}] ',
+                f'Avg Loss per step (x1e6) = [{loss_str}] ',
             )
             report_loss = [0. for _ in range(args.acquisition_steps)]
 
@@ -217,7 +220,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                 target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
                                                      recon_model, recon_output, eps, k)
                 # Improvement model output
-                loss = F.l1_loss(output, target)
+                loss = F.mse_loss(output, target)
                 epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
 
                 # Greedy policy (size = batch)  # TODO: is this a good idea?
@@ -330,7 +333,7 @@ def main(args):
         best_dev_loss = 1e9
         start_epoch = 0
         # Create directory to store results in
-        savestr = 'res{}_al{}_accel{}_{}_{}_{}_k{}'.format(args.resolution, args.accelerations, args.acquisition_steps,
+        savestr = 'res{}_al{}_accel{}_{}_{}_k{}_{}'.format(args.resolution, args.acquisition_steps, args.accelerations,
                                                            args.impro_model_name, args.recon_model_name,
                                                            args.num_target_rows,
                                                            datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
@@ -366,6 +369,11 @@ def main(args):
 
     # Training and evaluation
     k = args.num_target_rows
+    dev_ssim, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
+    logging.info(
+        f'Epoch = [-1/{args.num_epochs:4d}] DevSSIM = {dev_ssim:.3g}  DevSSIMTime = {dev_ssim_time:.2f}s',
+    )
+
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
         # eps decays a factor e after num_epochs / eps_decay_rate epochs: i.e. after 1/eps_decay_rate of all epochs
@@ -386,7 +394,7 @@ def main(args):
         logging.info(
             f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
             f'DevLoss = {dev_loss:.3g} DevSSIM = {dev_ssim:.3g} TrainTime = {train_time:.2f}s '
-            f'DevLossTime = {dev_loss_time:.2f}s DevSSIMTime = {dev_loss_time:.2f}s',
+            f'DevLossTime = {dev_loss_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
         )
         # save_model(args, args.run_dir, epoch, model, optimiser, None, False)
     writer.close()
@@ -397,12 +405,14 @@ def create_arg_parser():
 
     parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
     parser.add_argument('--resolution', default=320, type=int, help='Resolution of images')
+    parser.add_argument('--dataset', choices=['fastmri', 'cifar10'], required=True,
+                        help='Dataset to use.')
 
     # Data parameters
     parser.add_argument('--challenge', type=str, default='singlecoil',
-                        help='Which challenge')
-    parser.add_argument('--data-path', type=pathlib.Path, required=True,
-                        help='Path to the dataset')
+                        help='Which challenge for fastMRI training.')
+    parser.add_argument('--data-path', type=pathlib.Path, default=None,
+                        help='Path to the dataset. Required for fastMRI training.')
     parser.add_argument('--sample-rate', type=float, default=1.,
                         help='Fraction of total volumes to include')
     parser.add_argument('--acquisition', type=str, default=None,
@@ -423,7 +433,7 @@ def create_arg_parser():
                              'improvement model checkpoint.')
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
     # argument use-recon-mask-params above.
-    parser.add_argument('--accelerations', nargs='+', default=[4, 6, 8, 10], type=int,
+    parser.add_argument('--accelerations', nargs='+', default=[8], type=int,
                         help='Ratio of k-space columns to be sampled. If multiple values are '
                              'provided, then one of those is chosen uniformly at random for '
                              'each volume.')
@@ -446,6 +456,7 @@ def create_arg_parser():
                         'E.g. set to 2 if input is reconstruction and uncertainty map')
     parser.add_argument('--out-chans', type=int, default=32, help='Number of ConvNet output channels: these are input '
                         "for the FC layers that follow. Only used for 'bottle' models.")
+    parser.add_argument('--fc-size', default=512, type=int, help='Size (width) of fully connected layer(s).')
 
     parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')

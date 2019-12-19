@@ -5,6 +5,7 @@
       <w>backpropagate</w>
       <w>batchnorm</w>
       <w>chans</w>
+      <w>cifar</w>
       <w>conv</w>
       <w>convbottle</w>
       <w>convmask</w>
@@ -14,7 +15,9 @@
       <w>corpd</w>
       <w>corpdfs</w>
       <w>cuda</w>
+      <w>datasets</w>
       <w>downsampling</w>
+      <w>fastmri</w>
       <w>impro</w>
       <w>impromask</w>
       <w>impros</w>
