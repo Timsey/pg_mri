@@ -13,7 +13,7 @@ from tensorboardX import SummaryWriter
 # Importing Arguments is required for loading of Gauss reconstruction model
 from src.recon_models.unet_dist_model import Arguments
 
-from src.helpers.metrics import ssim
+from src.helpers.torch_metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders

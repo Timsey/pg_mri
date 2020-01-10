@@ -136,7 +136,7 @@ class DataTransform:
 
         # Need to return kspace and mask information when doing active learning, since we are
         # acquiring frequencies and updating the mask for a data point during an AL loop.
-        return kspace, masked_kspace, mask, zf, target, mean, std, attrs['norm'].astype(np.float32)
+        return kspace, masked_kspace, mask, zf, target, mean, std, fname, slice
 
     def fix_kspace(self, kspace):
         """
