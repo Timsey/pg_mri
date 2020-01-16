@@ -19,6 +19,7 @@
       <w>downsampling</w>
       <w>fastmri</w>
       <w>fname</w>
+      <w>graphviz</w>
       <w>impro</w>
       <w>impromask</w>
       <w>impros</w>
@@ -45,6 +46,7 @@
       <w>ssim</w>
       <w>ssims</w>
       <w>subsampling</w>
+      <w>timsey</w>
       <w>topk</w>
       <w>unacq</w>
       <w>unacquired</w>

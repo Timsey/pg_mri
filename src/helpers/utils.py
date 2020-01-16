@@ -16,15 +16,15 @@ def load_json(path):
 
 
 def count_parameters(model):
-    return sum(p.numel() for p in model.parameters())
+    return sum(p.numel() for p in model.parameters()) if model is not None else 0
 
 
 def count_trainable_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return sum(p.numel() for p in model.parameters() if p.requires_grad) if model is not None else 0
 
 
 def count_untrainable_parameters(model):
-    return sum(p.numel() for p in model.parameters() if not p.requires_grad)
+    return sum(p.numel() for p in model.parameters() if not p.requires_grad) if model is not None else 0
 
 
 def add_mask_params(args, recon_args):
@@ -37,7 +37,7 @@ def add_mask_params(args, recon_args):
     """
 
     # Use mask settings from reconstruction model
-    if args.use_recon_mask_params:
+    if args.use_recon_mask_params and args.recon_model_name != 'zero_filled':
         args.accelerations = recon_args.accelerations
         args.center_fractions = recon_args.center_fractions
         args.reciprocals_in_center = recon_args.mask_in_center_fracs
@@ -61,6 +61,9 @@ def add_mask_params(args, recon_args):
 
 
 def check_args_consistency(args, recon_args):
+    if args.recon_model_name == 'zero_filled':
+        return
+
     assert args.resolution == recon_args.resolution, ("Resolution mismatch between reconstruction model and provided: "
                                                       "{} and {}".format(args.resolution, recon_args.resolution))
     assert args.challenge == recon_args.challenge, ("Challenge mismatch between reconstruction model and provided: "

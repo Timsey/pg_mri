@@ -10,12 +10,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
+from torchviz import make_dot
 from tensorboardX import SummaryWriter
 
 # Importing Arguments is required for loading of Gauss reconstruction model
 from src.recon_models.unet_dist_model import Arguments
 
 from src.helpers.torch_metrics import ssim
+from src.helpers.losses import l1_loss_gradfixed, huber_loss
 from src.helpers.metrics import Metrics, METRIC_FUNCS
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters, plot_grad_flow)
@@ -97,6 +99,8 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
         #  The result is outshoots for some rows (this effect is heavily mitigated by sampling more rows at a time,
         #  as the bias is much less powerful when other rows also get sampled about half the time. Sampling more is
         #  however exactly what we are trying to avoid).
+        # TODO: We can just not train already acquired rows, and not sample them during acquisition, since it just
+        #  makes the function harder to learn if we do train on them (discontinuous jumps to 0).
         topk_rows[i, topk_replace_inds] = randrows
 
     # Acquire chosen rows, and compute the improvement target for each (batched)
@@ -163,6 +167,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
         at = time.perf_counter()
 
+        optimiser.zero_grad()
         for step in range(args.acquisition_steps):
             # recon_output.requires_grad = True
             # recon_output = Variable(recon_output, requires_grad=True)
@@ -186,21 +191,42 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             # TODO: Do this every step?
             #  Update model before grabbing next row? Or wait for all steps to be done and then update together?
             #  Maybe use replay buffer type strategy here? Requires too much memory (need to save all gradients)?
-            loss = F.l1_loss(output, target, reduction='none')  # TODO: Think about loss function
+            loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
             # TODO: multiply by size of loss mask, to compensate for bias if not all slices get same number of targets
-            loss = (loss * loss_mask).mean()
+            # loss2 = (loss * loss_mask)
+            loss = loss.mean()
+            # loss2 = loss2.mean()
             # TODO: figure out why including loss mask suddenly helps?!
 
             # TODO: Karpathy bugfix trick: https://karpathy.github.io/2019/04/25/recipe/
             # loss = torch.sum(output[0, :])
 
-            optimiser.zero_grad()
             loss.backward()
+
+            # import copy
+            # zero_inds = (loss_mask[0, :] == 0).nonzero().flatten()
+            #
+            # optimiser.zero_grad()
+            # loss.backward(retain_graph=True)
+            # wgrad1 = copy.deepcopy(list(model.named_parameters())[-2][1].grad)
+            # bgrad1 = copy.deepcopy(list(model.named_parameters())[-1][1].grad)
+            # optimiser.zero_grad()
+            # loss2.backward(retain_graph=True)
+            # wgrad2 = copy.deepcopy(list(model.named_parameters())[-2][1].grad)
+            # bgrad2 = copy.deepcopy(list(model.named_parameters())[-1][1].grad)
+
+            # grf = make_dot(loss, params=dict(model.named_parameters()))
+            # grf2 = make_dot(loss, params=dict(model.named_parameters()))
+
+            # import os
+            # os.environ['PATH'] += os.pathsep + '/home/timsey/anaconda3/envs/rim/lib/python3.7/site-packages/'
+            # grf.render(filename=args.run_dir / 'grf1')
+            # grf2.render(filename=args.run_dir / 'grf2')
 
             # fig = plot_grad_flow(model.named_parameters())
             # fig.savefig(args.run_dir / 'gradient_flow_epoch{}_iter{}_step{}.png'.format(epoch, it, step))
             # assert ((recon_output.grad[i] == 0.).all() for i in range(1, 16) and (recon_output.grad[0] != 0).any())
-            optimiser.step()
+            # optimiser.step()
 
             epoch_loss[step] += loss.item() / len(train_loader)
             report_loss[step] += loss.item() / args.report_interval
@@ -219,6 +245,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             pred_impro, next_rows = torch.max(output, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
             recon_output, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                            recon_model)
+
+        optimiser.step()
 
         if args.verbose >= 3:
             print('Time to train single batch of size {} for {} steps: {:.3f}'.format(
@@ -322,11 +350,11 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     #     model.eval()
     ssims = 0
     c_ssims = 0
-    # strategy: acquisition step: filename: [recons]
-    recons = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
-    targets = defaultdict(list)
-    metrics = {step: Metrics(METRIC_FUNCS) for step in range(args.acquisition_steps + 1)}
-    c_metrics = {step: Metrics(METRIC_FUNCS) for step in range(args.acquisition_steps + 1)}
+    # # strategy: acquisition step: filename: [recons]
+    # recons = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    # targets = defaultdict(list)
+    # metrics = {step: Metrics(METRIC_FUNCS) for step in range(args.acquisition_steps + 1)}
+    # c_metrics = {step: Metrics(METRIC_FUNCS) for step in range(args.acquisition_steps + 1)}
 
     epoch_outputs = defaultdict(list)
 
@@ -358,11 +386,11 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
             if epoch == -1:
                 c_batch_ssims.append(init_ssim_val.item())
 
-            eval_rec = norm_recon.to('cpu')
-            for i in range(eval_rec.size(0)):
-                recons[fname[i]]['center'][0].append(eval_rec[i].squeeze().numpy())
-                recons[fname[i]]['improv'][0].append(eval_rec[i].squeeze().numpy())
-                targets[fname[i]].append(gt.to('cpu')[i].squeeze().numpy())
+            # eval_rec = norm_recon.to('cpu')
+            # for i in range(eval_rec.size(0)):
+            #     recons[fname[i]]['center'][0].append(eval_rec[i].squeeze().numpy())
+            #     recons[fname[i]]['improv'][0].append(eval_rec[i].squeeze().numpy())
+            #     targets[fname[i]].append(gt.to('cpu')[i].squeeze().numpy())
 
             prev_acquired = [[] for _ in range(args.batch_size)]
             for step in range(args.acquisition_steps):
@@ -375,6 +403,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 # pred_impro, next_rows = torch.max(output, dim=1)
 
                 # TODO: necessary? Seems so.
+                # Only acquire rows that have not been already acquired
                 _, topk_rows = torch.topk(output, args.acquisition_steps, dim=1)
                 unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
                 next_rows = []
@@ -406,9 +435,9 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
 
-                eval_rec = norm_recon.to('cpu')
-                for i in range(eval_rec.size(0)):
-                    recons[fname[i]]['improv'][step + 1].append(eval_rec[i].squeeze().numpy())
+                # eval_rec = norm_recon.to('cpu')
+                # for i in range(eval_rec.size(0)):
+                #     recons[fname[i]]['improv'][step + 1].append(eval_rec[i].squeeze().numpy())
 
                 # Acquire center row
                 if epoch == -1:
@@ -424,28 +453,27 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                     # eventually shape = al_steps
                     c_batch_ssims.append(c_ssim_val.item())
 
-                    c_eval_rec = c_norm_recon.to('cpu')
-                    for i in range(c_eval_rec.size(0)):
-                        recons[fname[i]]['center'][step + 1].append(c_eval_rec[i].squeeze().numpy())
+                    # c_eval_rec = c_norm_recon.to('cpu')
+                    # for i in range(c_eval_rec.size(0)):
+                    #     recons[fname[i]]['center'][step + 1].append(c_eval_rec[i].squeeze().numpy())
 
             # shape = al_steps
             ssims += np.array(batch_ssims) / len(dev_loader)
             c_ssims += np.array(c_batch_ssims) / len(dev_loader)
 
-    for fname, vol_gts in targets.items():
-        for step in range(args.acquisition_steps + 1):
-            if epoch == -1:
-                c_metrics[step].push(np.stack(vol_gts), np.stack(recons[fname]['center'][step]))
-            metrics[step].push(np.stack(vol_gts), np.stack(recons[fname]['improv'][step]))
-
-    print('\n')
-    if epoch == -1:
-        for step in range(args.acquisition_steps + 1):
-            print('Center Metrics, step {}: {}'.format(step, c_metrics[step]))
-    print('\n')
-    for step in range(args.acquisition_steps + 1):
-        print('Improv Metrics, step {}: {}'.format(step, metrics[step]))
-    print('\n')
+    # for fname, vol_gts in targets.items():
+    #     for step in range(args.acquisition_steps + 1):
+    #         if epoch == -1:
+    #             c_metrics[step].push(np.stack(vol_gts), np.stack(recons[fname]['center'][step]))
+    #         metrics[step].push(np.stack(vol_gts), np.stack(recons[fname]['improv'][step]))
+    # print('\n')
+    # if epoch == -1:
+    #     for step in range(args.acquisition_steps + 1):
+    #         print('Center Metrics, step {}: {}'.format(step, c_metrics[step]))
+    # print('\n')
+    # for step in range(args.acquisition_steps + 1):
+    #     print('Improv Metrics, step {}: {}'.format(step, metrics[step]))
+    # print('\n')
 
     for step in range(args.acquisition_steps):
         outputs[epoch][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
@@ -518,9 +546,9 @@ def main(args):
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
 
     # TODO: remove this
-    first_batch = next(iter(train_loader))
-    train_loader = [first_batch] * 10
-    dev_loader = [first_batch]
+    # first_batch = next(iter(train_loader))
+    # train_loader = [first_batch] * 11
+    # dev_loader = [first_batch]
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
 
@@ -551,7 +579,7 @@ def main(args):
         best_dev_loss = min(best_dev_loss, dev_loss)
         save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
 
-        dev_ssims_str = ", ".join(["{}: {:.3f}".format(i + 1, l) for i, l in enumerate(dev_ssims)])
+        dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
         logging.info(
             f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
             f'DevLoss = {dev_loss:.3g} TrainTime = {train_time:.2f}s '
@@ -582,10 +610,13 @@ def create_arg_parser():
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
 
     # Reconstruction model
-    parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, required=True,
-                        help='Path to a pretrained reconstruction model.')
-    parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'dist_gauss'], required=True,
+    parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, default=None,
+                        help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
+                        'set to zero_filled.')
+    parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'dist_gauss', 'zero_filled'], required=True,
                         help='Reconstruction model name corresponding to model checkpoint.')
+    # parser.add_argument('--use-uncertainty', action='store_true',
+    #                     help='Whether to use reconstruction model uncertainty as input to the improvement model.')
     parser.add_argument('--use-recon-mask-params', action='store_true',
                         help='Whether to use mask parameter settings (acceleration and center fraction) that the '
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
@@ -677,4 +708,9 @@ if __name__ == '__main__':
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    if args.device == 'cuda':
+        torch.cuda.manual_seed(args.seed)
+
+    # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
+    # torch.backends.cudnn.enabled = False
     main(args)

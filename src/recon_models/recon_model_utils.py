@@ -12,13 +12,21 @@ def recon_model_forward_pass(args, recon_model, zf):
     elif model_name == 'dist_gauss':
         loc, logscale = recon_model(zf)
         output = torch.cat((loc, logscale), dim=1)
+    elif model_name == 'zero_filled':
+        output = torch.cat((zf, zf), dim=1)
     else:
         raise ValueError('Model type {} is not supported'.format(model_name))
+
+    if args.in_chans == 1:  # not using uncertainty
+        output = output[:, 0:1, :, :]
     # Output of size batch x channel x resolution x resolution
     return output
 
 
 def load_recon_model(args):
+    if args.recon_model_name == 'zero_filled':  # zero_filled model
+        return None, None
+
     checkpoint = torch.load(args.recon_model_checkpoint)
     recon_args = checkpoint['args']
     recon_model = build_recon_model(recon_args, args)
