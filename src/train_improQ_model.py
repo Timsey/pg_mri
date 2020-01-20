@@ -53,13 +53,33 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     #  of zero loss targets (i.e. already acquired rows) randomly.
     res = mask.size(-2)
     batch_acquired_rows = (mask.squeeze(1).squeeze(1).squeeze(-1) == 1)
-    acquired_num = batch_acquired_rows[0, :].sum()
-    # Number of topk rows to use
-    bern = torch.distributions.binomial.Binomial(k, (res - acquired_num).float() / res)
+    acquired_num = batch_acquired_rows[0, :].sum().item()
+    # Number of topk rows to use: correct, or sample without replacement instead?
+    # A fraction eps of the eventual selected top rows will be randomly chosen. However, for efficiency reasons we
+    # must predetermine how many of these randomly chosen rows on average will end up being rows with zero improvement.
+    # Eps determines how many of the top rows will be replaced by random, and the fraction of already acquired rows
+    # determines how many of these randomly chosen rows will be already acquired.
+    # Example: k = 20, res = 80, eps = 0.5, 10 already acquired rows.
+    # We choose 20 top rows, of which (after some training) zero will be already acquired.
+    # Then we replace a fraction eps (so 10) of these rows by random rows that are not the 10 rows that don't get
+    # replaced, so we have 70 options left, of which 10 are already acquired. Thus we expect to see: 10/70 * 10
+    # rows with zero improvement. Because we need to determine this beforehand, we determine this number (or rather k
+    # minus this number) by doing k Bernoulli trials with probability 65/70, leading to 130/70 * 10 rows with nonzero
+    # improvement, of which 10 top rows, and 6/7 * 10 non-top non-zero rows, as expected.
+    # I.e. if eps is 0.5 and k = 20, we expect 10 top rows. The other 10 are randomly selected from the remainder, and
+    # 10 out of the remaining 70 are zero rows. So 10 top rows, 10/70 * 10 zero rows, and 60/70 * 10 neither.
+    # Note that in the algorithm (since we predetermine the amount of topk rows) we sample topk rows to be replaced
+    # only after restricting the pool to non-acquired rows. I.e. in the above example we might find 2 zero rows and 18
+    # initial top rows. If eps is 0.5, then we expect 10 of those top rows to be replaced, but crucially 2 of the rows
+    # that they will be replaced by have already been determined to be zero rows. Thus we really only want to replace
+    # 8 of the 18 rows, and thus we need to rescale epsilon to reflect that.
+    p = (res - eps * (k + acquired_num)) / (res - eps * k)
+    bern = torch.distributions.binomial.Binomial(k, p)
     tk = int(bern.sample())
     # Number of zero rows to use
     zk = k - tk
-
+    # Getting eps * k is equal to getting rescaled_eps * tk + zk in expectation.
+    rescaled_eps = (eps * k - zk) / tk
     # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
     # squeeze mask such that batch dimension doesn't vanish if it's 1.
     output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
@@ -69,12 +89,13 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     for i in range(mask.size(0)):  # Loop over slices in batch
         # Get k top indices from current output, but make sure to not choose rows that are already acquired here
         acquired_rows = batch_acquired_rows[i, :].nonzero().flatten()
-        remaining_row_scores = output[i, :].clone().detach()  # clone seems necessary?
+        remaining_row_scores = output[i, :].clone().detach()  # Clone is necessary to prevent gradient explosion
         remaining_row_scores[acquired_rows] = -1e3  # so it doesn't get chosen, but indices stay correct
         _, topk_rows = torch.topk(remaining_row_scores, tk)
 
         # Some of these will be replaced by random rows: select which ones to replace
-        topk_replace_mask = (eps > torch.rand(tk))  # which of the top k rows to replace with random rows (binary mask)
+        # which of the top k rows to replace with random rows (binary mask)
+        topk_replace_mask = (rescaled_eps > torch.rand(tk))
         topk_replace_inds = topk_replace_mask.nonzero().flatten()  # which of the top k rows to replace with random rows
         topk_keep_inds = (topk_replace_mask == 0).nonzero().flatten()
         # Remaining options: no rows that are already acquired
@@ -113,7 +134,7 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
     impros = scores - base_score
     # target = batch x rows, batch_train_rows and impros = batch x tk
-    target = output.clone().detach()  # clone seems necessary?
+    target = output.clone().detach()  # clone is necessary, otherwise changing target also changes output: 0 loss always
     for j, train_rows in enumerate(batch_train_rows):
         # impros[j, 0] (slice j, row 0 in train_rows[j]) corresponds to the row train_rows[j, 0] = 9
         # (for instance). This means the improvement 9th row in the kspace ordering is element 0 in impros.
@@ -158,7 +179,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
         at = time.perf_counter()
 
-        optimiser.zero_grad()
+        # optimiser.zero_grad()
         for step in range(args.acquisition_steps):
             target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
                                                  recon_model, recon_output, eps=eps, k=k)
@@ -169,9 +190,13 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
             # Compute loss and backpropagate
             #  TODO: Maybe use replay buffer type strategy here? Requires too much memory (need to save all gradients)?
-            loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
+            # loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
+            loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
             loss = loss.mean()
+
+            optimiser.zero_grad()
             loss.backward()
+            optimiser.step()
 
             epoch_loss[step] += loss.item() / len(train_loader)
             report_loss[step] += loss.item() / args.report_interval
@@ -182,7 +207,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             recon_output, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                            recon_model)
 
-        optimiser.step()
+        # optimiser.step()
 
         if args.verbose >= 3:
             print('Time to train single batch of size {} for {} steps: {:.3f}'.format(
@@ -190,15 +215,15 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         if it % args.report_interval == 0:
             if it == 0:
-                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e3)
+                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e6)
                                       for i, l in enumerate(report_loss)])
             else:
-                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e3) for i, l in enumerate(report_loss)])
+                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e6) for i, l in enumerate(report_loss)])
             logging.info(
                 f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
                 f'Iter = [{it:4d}/{len(train_loader):4d}], '
                 f'Time = {time.perf_counter() - start_iter:.2f}s, '
-                f'Avg Loss per step (x1e3) = [{loss_str}] ',
+                f'Avg Loss per step (x1e6) = [{loss_str}] ',
             )
             report_loss = [0. for _ in range(args.acquisition_steps)]
 
@@ -259,7 +284,8 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                 target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
                                                      recon_model, recon_output, eps, k)
                 # Improvement model output
-                loss = l1_loss_gradfixed(output, target, reduction='mean')
+                # loss = l1_loss_gradfixed(output, target, reduction='mean')
+                loss = huber_loss(output, target, reduction='mean')  # TODO: Think about loss function
                 epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
 
                 # Greedy policy (size = batch)  # TODO: is this a good idea?
@@ -475,9 +501,9 @@ def main(args):
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
 
     # TODO: remove this
-    first_batch = next(iter(train_loader))
-    train_loader = [first_batch] * 10
-    dev_loader = [first_batch]
+    # first_batch = next(iter(train_loader))
+    # train_loader = [first_batch] * 10
+    # dev_loader = [first_batch]
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
 
