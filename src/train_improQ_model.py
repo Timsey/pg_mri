@@ -38,6 +38,64 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
+# def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, recon_output, eps, k):
+#     recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
+#     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
+#
+#     # shape = batch
+#     base_score = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)  # keep channel dim = 1
+#
+#     # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
+#     output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
+#
+#     topk_rows = torch.zeros((mask.size(0), k)).long().to(args.device)
+#     # Now set random rows to overwrite topk values and inds (epsilon greedily)
+#     for i in range(mask.size(0)):  # Loop over slices in batch
+#         # Get k top indices that are not acquired rows, because we can set targets for acquired rows to 0
+#         # TODO: this may bias the model, because it learns to predict those 0s much more often than other values
+#         sl_remain_out = output[i, :].clone().detach()
+#         _, sl_topk_rows = torch.topk(sl_remain_out, k)
+#         topk_rows[i, :] = sl_topk_rows
+#
+#         # Some of these will be replaced by random rows: select which ones to replace
+#         topk_replace = (eps > torch.rand(k))  # which of the top k rows to replace with random rows (binary mask)
+#         topk_replace_inds = topk_replace.nonzero().flatten()  # which of the top k rows to replace with random rows
+#
+#         # Which random rows to pick to replace the some of the topk rows (sampled without replacement here)
+#         row_options = torch.tensor([idx for idx in range(mask.size(-2)) if
+#                                     idx not in sl_topk_rows]).to(args.device)
+#         # Shuffle potential rows to acquire random rows (equal to the number of 1s in topk_replace)
+#         randrows = row_options[torch.randperm(len(row_options))][:topk_replace.sum()].long()
+#         topk_replace_inds = topk_replace_inds[torch.randperm(len(topk_replace_inds))][:len(randrows)]
+#
+#         # TODO: Currently the topk_rows are determined, and then a number of them are overwritten by random rows NOT
+#         #  IN THE TOPK. This should be fixed so that topk rows can also be randomly selected (otherwise bias).
+#         topk_rows[i, topk_replace_inds] = randrows
+#
+#     # Acquire chosen rows, and compute the improvement target for each (batched)
+#     # shape = batch x rows = k x res x res
+#     zf_exp, mean_exp, std_exp = acquire_new_zf_exp_batch(kspace, masked_kspace, topk_rows)
+#     # shape = batch . rows x 1 x res x res, so that we can run the forward model for all rows in the batch
+#     zf_input = zf_exp.view(mask.size(0) * k, 1, mask.size(-2), mask.size(-2))
+#     # shape = batch . rows x 2 x res x res
+#     recons_output = recon_model_forward_pass(args, recon_model, zf_input)
+#     # shape = batch . rows x 1 x res x res, extract reconstruction to compute target
+#     recons = recons_output[:, 0:1, ...]
+#     # shape = batch x rows x res x res
+#     recons = recons.view(mask.size(0), k, mask.size(-2), mask.size(-2))
+#     norm_recons = recons * std_exp + mean_exp  # TODO: Normalisation necessary?
+#     gt = gt.expand(-1, k, -1, -1)
+#     # scores = batch x rows (channels), base_score = batch x 1
+#     scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
+#     impros = (scores - base_score).detach()  # .detach() only necessary when recon_output.requires_grad == True
+#     # target = batch x rows, topk_rows and impros = batch x k
+#     target = output.clone().detach()
+#     for j, sl_topk_rows in enumerate(topk_rows):
+#         kspace_row_inds, permuted_inds = sl_topk_rows.sort()
+#         target[j, kspace_row_inds] = impros[j, permuted_inds]
+#     return target, output
+
+
 def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, recon_output, eps, k):
     recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
@@ -357,18 +415,18 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 #  which means it will never choose a new row again for this acquisition trajectory.
                 _, next_rows = torch.max(output, dim=1)
 
-                # # TODO: necessary? Seems so.
-                # # Only acquire rows that have not been already acquired
-                # _, topk_rows = torch.topk(output, args.acquisition_steps, dim=1)
-                # unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
-                # next_rows = []
-                # for j, sl_topk_rows in enumerate(topk_rows):
-                #     for row in sl_topk_rows:
-                #         if row in unacquired[j, :].nonzero().flatten():
-                #             next_rows.append(row)
-                #             break
-                # # TODO: moving to device should happen only once before both loops. Should just mutate object after
-                # next_rows = torch.tensor(next_rows).long().to(args.device)
+                # TODO: necessary? Seems so.
+                # Only acquire rows that have not been already acquired
+                _, topk_rows = torch.topk(output, args.acquisition_steps, dim=1)
+                unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
+                next_rows = []
+                for j, sl_topk_rows in enumerate(topk_rows):
+                    for row in sl_topk_rows:
+                        if row in unacquired[j, :].nonzero().flatten():
+                            next_rows.append(row)
+                            break
+                # TODO: moving to device should happen only once before both loops. Should just mutate object after
+                next_rows = torch.tensor(next_rows).long().to(args.device)
 
                 if args.verbose >= 3:
                     print('Rows to acquire:', next_rows)
