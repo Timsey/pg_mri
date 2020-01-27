@@ -142,19 +142,16 @@ class ConvPoolMaskModel(nn.Module):
 
         self.fc_recon = nn.Sequential(
             nn.Linear(in_features=self.flattened_size, out_features=self.fc_size),
-            nn.LeakyReLU(),
-            nn.Linear(in_features=self.fc_size, out_features=self.fc_size),
-            nn.LeakyReLU(),
-            nn.Linear(in_features=self.fc_size, out_features=self.resolution)
+            nn.LeakyReLU()
         )
 
         self.mask_encoding = MaskEncoder(resolution, chans)
 
-        # self.fc_out = nn.Sequential(
-        #     nn.Linear(in_features=self.fc_size + resolution, out_features=self.fc_size),
-        #     nn.LeakyReLU(),
-        #     nn.Linear(in_features=self.fc_size, out_features=resolution)
-        # )
+        self.fc_out = nn.Sequential(
+            nn.Linear(in_features=self.fc_size+resolution, out_features=self.fc_size),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=self.fc_size, out_features=resolution)
+        )
 
     def forward(self, image, mask):
         """
@@ -181,9 +178,10 @@ class ConvPoolMaskModel(nn.Module):
 
         # First dimension is batch dimension
         # Concatenate among second (last) dimension
-        # pred = torch.cat((image_emb, mask_emb), dim=-1)
-        # pred = self.fc_out(emb)
-        pred = image_emb * mask_emb  # 'masking'
+        combined_emb = torch.cat((image_emb, mask_emb), dim=-1)
+        combined_emb = self.fc_out(combined_emb)
+        # pred = combined_emb
+        pred = combined_emb * mask_emb  # 'masking'
         return pred
 
 
