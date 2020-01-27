@@ -12,6 +12,7 @@
       <w>convolutional</w>
       <w>convpool</w>
       <w>convpoolmask</w>
+      <w>convpoolmaskconv</w>
       <w>corpd</w>
       <w>corpdfs</w>
       <w>cuda</w>
@@ -32,7 +33,10 @@
       <w>kspaces</w>
       <w>logscale</w>
       <w>logvarenc</w>
+      <w>maskconv</w>
+      <w>maskfc</w>
       <w>meanenc</w>
+      <w>mrimpro</w>
       <w>multicoil</w>
       <w>nongreedy</w>
       <w>outshoots</w>
@@ -56,6 +60,7 @@
       <w>untrainable</w>
       <w>vals</w>
       <w>vectorise</w>
+      <w>wandb</w>
     </words>
   </dictionary>
 </component>

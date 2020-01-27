@@ -4,6 +4,7 @@ import datetime
 import random
 import argparse
 import pathlib
+import wandb
 from collections import defaultdict
 
 import numpy as np
@@ -277,12 +278,14 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                       for i, l in enumerate(report_loss)])
             else:
                 loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e6) for i, l in enumerate(report_loss)])
+
             logging.info(
                 f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
                 f'Iter = [{it:4d}/{len(train_loader):4d}], '
                 f'Time = {time.perf_counter() - start_iter:.2f}s, '
                 f'Avg Loss per step (x1e6) = [{loss_str}] ',
             )
+
             report_loss = [0. for _ in range(args.acquisition_steps)]
 
         start_iter = time.perf_counter()
@@ -292,6 +295,9 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         target_counts[epoch][step + 1] = epoch_target_counts[step + 1].tolist()
     save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
     save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
+
+    if args.wandb:
+        wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}})
 
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
@@ -350,7 +356,8 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                 _, next_rows = torch.max(output, dim=1)
                 recon_output, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                                recon_model)
-
+        if args.wandb:
+            wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}})
         for step, loss in enumerate(epoch_loss):
             writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
     return np.mean(epoch_loss), time.perf_counter() - start
@@ -362,6 +369,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     """
     #     model.eval()
     ssims = 0
+    f_ssims = 0
     c_ssims = 0
     # # strategy: acquisition step: filename: [recons]
     # recons = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
@@ -391,10 +399,13 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
             c_masked_kspace = masked_kspace.clone()
             c_mask = mask.clone()
+            f_masked_kspace = masked_kspace.clone()
+            f_mask = mask.clone()
             norm_recon = recon_output[:, 0:1, :, :] * std + mean
             init_ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean()
 
             batch_ssims = [init_ssim_val.item()]
+            f_batch_ssims = [init_ssim_val.item()]
             c_batch_ssims = []
             if epoch == -1:
                 c_batch_ssims.append(init_ssim_val.item())
@@ -405,7 +416,6 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
             #     recons[fname[i]]['improv'][0].append(eval_rec[i].squeeze().numpy())
             #     targets[fname[i]].append(gt.to('cpu')[i].squeeze().numpy())
 
-            prev_acquired = [[] for _ in range(args.batch_size)]
             for step in range(args.acquisition_steps):
                 # Improvement model output
                 output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
@@ -417,27 +427,16 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
                 # TODO: necessary? Seems so.
                 # Only acquire rows that have not been already acquired
-                _, topk_rows = torch.topk(output, args.acquisition_steps, dim=1)
-                unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
-                next_rows = []
+                _, topk_rows = torch.topk(output, args.resolution, dim=1)
+                f_unacquired = (f_mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
+                f_next_rows = []
                 for j, sl_topk_rows in enumerate(topk_rows):
                     for row in sl_topk_rows:
-                        if row in unacquired[j, :].nonzero().flatten():
-                            next_rows.append(row)
+                        if row in f_unacquired[j, :].nonzero().flatten():
+                            f_next_rows.append(row)
                             break
                 # TODO: moving to device should happen only once before both loops. Should just mutate object after
-                next_rows = torch.tensor(next_rows).long().to(args.device)
-
-                if args.verbose >= 3:
-                    print('Rows to acquire:', next_rows)
-                if args.verbose >= 4:
-                    for i, row in enumerate(next_rows):
-                        row = row.item()
-                        if row in prev_acquired[i]:
-                            print(' - Batch {}, slice {}, step {}: selected row {} was previously acquired.'.format(
-                                it, i, step, row))
-                        else:
-                            prev_acquired[i].append(row)
+                f_next_rows = torch.tensor(f_next_rows).long().to(args.device)
 
                 # Acquire this row
                 recon_output, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
@@ -447,6 +446,15 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean()
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
+
+                # Acquire this row
+                f_recon_output, f_zf, f_mean, f_std, f_mask, f_masked_kspace = acquire_row(
+                    kspace, f_masked_kspace, f_next_rows, f_mask, recon_model)
+                f_norm_recon = f_recon_output[:, 0:1, :, :] * f_std + f_mean
+                # shape = 1
+                f_ssim_val = ssim(f_norm_recon, gt, size_average=False, data_range=1e-4).mean()
+                # eventually shape = al_steps
+                f_batch_ssims.append(f_ssim_val.item())
 
                 # eval_rec = norm_recon.to('cpu')
                 # for i in range(eval_rec.size(0)):
@@ -472,6 +480,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
             # shape = al_steps
             ssims += np.array(batch_ssims) / len(dev_loader)
+            f_ssims += np.array(f_batch_ssims) / len(dev_loader)
             c_ssims += np.array(c_batch_ssims) / len(dev_loader)
 
     # for fname, vol_gts in targets.items():
@@ -494,7 +503,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
     for step, val in enumerate(ssims):
         writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
-    return ssims, c_ssims, time.perf_counter() - start
+
+    if args.wandb:
+        wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}})
+        wandb.log({'val_f_ssims': {str(key): val for key, val in enumerate(f_ssims)}})
+
+    return ssims, f_ssims, c_ssims, time.perf_counter() - start
 
 
 def visualise(args, epoch, model, display_loader, writer):
@@ -532,6 +546,10 @@ def main(args):
         args.run_dir = args.exp_dir / savestr
         args.run_dir.mkdir(parents=True, exist_ok=False)
 
+    if args.wandb:
+        wandb.config.update(args)
+        wandb.watch(model, log='all')
+
     # Logging
     logging.info(args)
     logging.info(recon_model)
@@ -567,10 +585,14 @@ def main(args):
 
     # Training and evaluation
     k = args.num_target_rows
-    dev_ssims, c_dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
+
+    dev_ssims, f_dev_ssims, c_dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
+
     dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
+    f_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(f_dev_ssims)])
     c_dev_ssims_str  = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(c_dev_ssims)])
     logging.info(f'C_DevSSIM = [{c_dev_ssims_str}]')
+    logging.info(f'F_DevSSIM = [{f_dev_ssims_str}]')
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
@@ -585,20 +607,24 @@ def main(args):
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k)
         # TODO: do both of these? Make more efficient?
         dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
-        dev_ssims, _, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
+        dev_ssims, f_dev_ssims, _, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
         # visualise(args, epoch, model, display_loader, writer)
 
         is_new_best = dev_loss < best_dev_loss
         best_dev_loss = min(best_dev_loss, dev_loss)
         save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
+        if args.wandb:
+            wandb.save('model.h5')
 
         dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
+        f_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(f_dev_ssims)])
         logging.info(
             f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
             f'DevLoss = {dev_loss:.3g} TrainTime = {train_time:.2f}s '
             f'DevLossTime = {dev_loss_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
         )
-        logging.info(f'DevSSIM = [{dev_ssims_str}]')
+        logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+        logging.info(f'F_DevSSIM = [{f_dev_ssims_str}]')
         # save_model(args, args.run_dir, epoch, model, optimiser, None, False)
     writer.close()
 
@@ -610,6 +636,8 @@ def create_arg_parser():
     parser.add_argument('--resolution', default=320, type=int, help='Resolution of images')
     parser.add_argument('--dataset', choices=['fastmri', 'cifar10'], required=True,
                         help='Dataset to use.')
+    parser.add_argument('--wandb',  action='store_true',
+                        help='Whether to use wandb logging for this run.')
 
     # Data parameters
     parser.add_argument('--challenge', type=str, default='singlecoil',
@@ -634,9 +662,10 @@ def create_arg_parser():
                         help='Whether to use mask parameter settings (acceleration and center fraction) that the '
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
 
-    parser.add_argument('--impro-model-name', choices=['convpool', 'convpoolmask', 'convbottle'], required=True,
-                        help='Improvement model name (if using resume, must correspond to model at the '
-                             'improvement model checkpoint.')
+    parser.add_argument('--impro-model-name', choices=['convpool', 'convpoolmask', 'convbottle', 'maskfc', 'maskconv',
+                                                       'convpoolmaskconv'],
+                        required=True, help='Improvement model name (if using resume, must correspond to model at the '
+                        'improvement model checkpoint.')
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
     # argument use-recon-mask-params above.
     parser.add_argument('--accelerations', nargs='+', default=[8], type=int,
@@ -723,6 +752,9 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
+
+    if args.wandb:
+        wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False
