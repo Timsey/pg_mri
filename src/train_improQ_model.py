@@ -663,7 +663,7 @@ def create_arg_parser():
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
 
     parser.add_argument('--impro-model-name', choices=['convpool', 'convpoolmask', 'convbottle', 'maskfc', 'maskconv',
-                                                       'convpoolmaskconv'],
+                                                       'convpoolmaskconv', 'location'],
                         required=True, help='Improvement model name (if using resume, must correspond to model at the '
                         'improvement model checkpoint.')
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
