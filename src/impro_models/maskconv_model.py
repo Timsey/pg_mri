@@ -32,7 +32,7 @@ class MaskConvModel(nn.Module):
 
         self.resolution = resolution
 
-        num_up_and_down_layers = 2
+        num_up_and_down_layers = 3
 
         layers = [Conv1DBlock(1, chans)]
         for _ in range(num_up_and_down_layers):

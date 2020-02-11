@@ -24,7 +24,7 @@ from src.helpers.utils import (add_mask_params, save_json, check_args_consistenc
                                count_trainable_parameters, count_untrainable_parameters, plot_grad_flow)
 from src.helpers.data_loading import create_data_loaders
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
-                                                recon_model_forward_pass, load_recon_model)
+                                                recon_model_forward_pass, create_impro_model_input, load_recon_model)
 from src.impro_models.impro_model_utils import (load_impro_model, build_impro_model, build_optim, save_model,
                                                 impro_model_forward_pass)
 
@@ -39,66 +39,14 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
-# def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, recon_output, eps, k):
-#     recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
-#     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
-#
-#     # shape = batch
-#     base_score = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)  # keep channel dim = 1
-#
-#     # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
-#     output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
-#
-#     topk_rows = torch.zeros((mask.size(0), k)).long().to(args.device)
-#     # Now set random rows to overwrite topk values and inds (epsilon greedily)
-#     for i in range(mask.size(0)):  # Loop over slices in batch
-#         # Get k top indices that are not acquired rows, because we can set targets for acquired rows to 0
-#         # TODO: this may bias the model, because it learns to predict those 0s much more often than other values
-#         sl_remain_out = output[i, :].clone().detach()
-#         _, sl_topk_rows = torch.topk(sl_remain_out, k)
-#         topk_rows[i, :] = sl_topk_rows
-#
-#         # Some of these will be replaced by random rows: select which ones to replace
-#         topk_replace = (eps > torch.rand(k))  # which of the top k rows to replace with random rows (binary mask)
-#         topk_replace_inds = topk_replace.nonzero().flatten()  # which of the top k rows to replace with random rows
-#
-#         # Which random rows to pick to replace the some of the topk rows (sampled without replacement here)
-#         row_options = torch.tensor([idx for idx in range(mask.size(-2)) if
-#                                     idx not in sl_topk_rows]).to(args.device)
-#         # Shuffle potential rows to acquire random rows (equal to the number of 1s in topk_replace)
-#         randrows = row_options[torch.randperm(len(row_options))][:topk_replace.sum()].long()
-#         topk_replace_inds = topk_replace_inds[torch.randperm(len(topk_replace_inds))][:len(randrows)]
-#
-#         # TODO: Currently the topk_rows are determined, and then a number of them are overwritten by random rows NOT
-#         #  IN THE TOPK. This should be fixed so that topk rows can also be randomly selected (otherwise bias).
-#         topk_rows[i, topk_replace_inds] = randrows
-#
-#     # Acquire chosen rows, and compute the improvement target for each (batched)
-#     # shape = batch x rows = k x res x res
-#     zf_exp, mean_exp, std_exp = acquire_new_zf_exp_batch(kspace, masked_kspace, topk_rows)
-#     # shape = batch . rows x 1 x res x res, so that we can run the forward model for all rows in the batch
-#     zf_input = zf_exp.view(mask.size(0) * k, 1, mask.size(-2), mask.size(-2))
-#     # shape = batch . rows x 2 x res x res
-#     recons_output = recon_model_forward_pass(args, recon_model, zf_input)
-#     # shape = batch . rows x 1 x res x res, extract reconstruction to compute target
-#     recons = recons_output[:, 0:1, ...]
-#     # shape = batch x rows x res x res
-#     recons = recons.view(mask.size(0), k, mask.size(-2), mask.size(-2))
-#     norm_recons = recons * std_exp + mean_exp  # TODO: Normalisation necessary?
-#     gt = gt.expand(-1, k, -1, -1)
-#     # scores = batch x rows (channels), base_score = batch x 1
-#     scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
-#     impros = (scores - base_score).detach()  # .detach() only necessary when recon_output.requires_grad == True
-#     # target = batch x rows, topk_rows and impros = batch x k
-#     target = output.clone().detach()
-#     for j, sl_topk_rows in enumerate(topk_rows):
-#         kspace_row_inds, permuted_inds = sl_topk_rows.sort()
-#         target[j, kspace_row_inds] = impros[j, permuted_inds]
-#     return target, output
+def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, impro_input, eps, k):
+    # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
+    # squeeze mask such that batch dimension doesn't vanish if it's 1.
+    output, train = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
+    if not train:  # For center and random model: we don't need to train anything
+        return None, output
 
-
-def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, recon_output, eps, k):
-    recon = recon_output[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
+    recon = impro_input[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
 
     # shape = batch
@@ -139,9 +87,6 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     zk = k - tk
     # Getting eps * k is equal to getting rescaled_eps * tk + zk in expectation.
     rescaled_eps = (eps * k - zk) / tk
-    # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
-    # squeeze mask such that batch dimension doesn't vanish if it's 1.
-    output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
 
     batch_train_rows = torch.zeros((mask.size(0), tk)).long().to(args.device)
     # Now set random rows to overwrite topk values and inds (epsilon greedily)
@@ -208,7 +153,8 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
 
 def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k):
     # TODO: try batchnorm in FC layers
-    model.train()
+    if not isinstance(model, str):
+        model.train()
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
     start_epoch = start_iter = time.perf_counter()
@@ -232,7 +178,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         gt = gt * std + mean
 
         # Base reconstruction model forward pass
-        recon_output = recon_model_forward_pass(args, recon_model, zf)
+        impro_input = create_impro_model_input(args, recon_model, zf, mask)
 
         # TODO: number of steps should be dependent on acceleration!
         #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
@@ -241,63 +187,66 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # optimiser.zero_grad()
         for step in range(args.acquisition_steps):
             target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
-                                                 recon_model, recon_output, eps=eps, k=k)
+                                                 recon_model, impro_input, eps=eps, k=k)
 
-            loss_mask = (target != output).float()
-            epoch_targets[step + 1] += (target * loss_mask).to('cpu').numpy().sum(axis=0)
-            epoch_target_counts[step + 1] += loss_mask.to('cpu').numpy().sum(axis=0)
+            if target is not None:
+                loss_mask = (target != output).float()
+                epoch_targets[step + 1] += (target * loss_mask).to('cpu').numpy().sum(axis=0)
+                epoch_target_counts[step + 1] += loss_mask.to('cpu').numpy().sum(axis=0)
 
-            # Compute loss and backpropagate
-            #  TODO: Maybe use replay buffer type strategy here? Requires too much memory (need to save all gradients)?
-            # loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
-            loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
-            loss = loss.mean()
+                # Compute loss and backpropagate
+                #  TODO: Maybe use replay buffer type strategy here? Requires too much memory
+                #   (need to save all gradients)?
+                # loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
+                loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
+                loss = loss.mean()
 
-            optimiser.zero_grad()
-            loss.backward()
-            optimiser.step()
+                optimiser.zero_grad()
+                loss.backward()
+                optimiser.step()
 
-            epoch_loss[step] += loss.item() / len(train_loader)
-            report_loss[step] += loss.item() / args.report_interval
-            writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
+                epoch_loss[step] += loss.item() / len(train_loader)
+                report_loss[step] += loss.item() / args.report_interval
+                writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
             # Acquire row for next step: GREEDY
             _, next_rows = torch.max(output, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
-            recon_output, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                           recon_model)
+            impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                          recon_model)
 
         # optimiser.step()
+        if target is not None:
+            if args.verbose >= 3:
+                print('Time to train single batch of size {} for {} steps: {:.3f}'.format(
+                    args.batch_size, args.acquisition_steps, time.perf_counter() - at))
 
-        if args.verbose >= 3:
-            print('Time to train single batch of size {} for {} steps: {:.3f}'.format(
-                args.batch_size, args.acquisition_steps, time.perf_counter() - at))
+            if it % args.report_interval == 0:
+                if it == 0:
+                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e6)
+                                          for i, l in enumerate(report_loss)])
+                else:
+                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e6) for i, l in enumerate(report_loss)])
 
-        if it % args.report_interval == 0:
-            if it == 0:
-                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e6)
-                                      for i, l in enumerate(report_loss)])
-            else:
-                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e6) for i, l in enumerate(report_loss)])
+                logging.info(
+                    f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
+                    f'Iter = [{it:4d}/{len(train_loader):4d}], '
+                    f'Time = {time.perf_counter() - start_iter:.2f}s, '
+                    f'Avg Loss per step (x1e6) = [{loss_str}] ',
+                )
 
-            logging.info(
-                f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
-                f'Iter = [{it:4d}/{len(train_loader):4d}], '
-                f'Time = {time.perf_counter() - start_iter:.2f}s, '
-                f'Avg Loss per step (x1e6) = [{loss_str}] ',
-            )
-
-            report_loss = [0. for _ in range(args.acquisition_steps)]
+                report_loss = [0. for _ in range(args.acquisition_steps)]
 
         start_iter = time.perf_counter()
 
-    for step in range(args.acquisition_steps):
-        targets[epoch][step + 1] = epoch_targets[step + 1].tolist()
-        target_counts[epoch][step + 1] = epoch_target_counts[step + 1].tolist()
-    save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
-    save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
+    if target is not None:
+        for step in range(args.acquisition_steps):
+            targets[epoch][step + 1] = epoch_targets[step + 1].tolist()
+            target_counts[epoch][step + 1] = epoch_target_counts[step + 1].tolist()
+        save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
+        save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
 
-    if args.wandb:
-        wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}})
+        if args.wandb:
+            wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}})
 
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
@@ -312,15 +261,16 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
         mask[sl, :, :, next_row, :] = 1.
         masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
     # Get new reconstruction for batch
-    recon_output = recon_model_forward_pass(args, recon_model, zf)
-    return recon_output, zf, mean, std, mask, masked_kspace
+    impro_input = create_impro_model_input(args, recon_model, zf, mask)
+    return impro_input, zf, mean, std, mask, masked_kspace
 
 
 def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
     """
     Evaluates using loss function: i.e. how close are the predicted improvements to the actual improvements.
     """
-    model.eval()
+    if not isinstance(model, str):
+        model.eval()
     eps = 0  # Only evaluate for acquisitions the model actually wants to do
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     start = time.perf_counter()
@@ -340,26 +290,29 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
             gt = gt * std + mean
 
             # Base reconstruction model forward pass
-            recon_output = recon_model_forward_pass(args, recon_model, zf)
+            impro_input = create_impro_model_input(args, recon_model, zf, mask)
 
             for step in range(args.acquisition_steps):
                 # Get impro model input and target:
                 # this step requires many forward passes through the reconstruction model
                 target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
-                                                     recon_model, recon_output, eps, k)
-                # Improvement model output
-                # loss = l1_loss_gradfixed(output, target, reduction='mean')
-                loss = huber_loss(output, target, reduction='mean')  # TODO: Think about loss function
-                epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
+                                                     recon_model, impro_input, eps, k)
+
+                if target is not None:
+                    # Improvement model output
+                    # loss = l1_loss_gradfixed(output, target, reduction='mean')
+                    loss = huber_loss(output, target, reduction='mean')  # TODO: Think about loss function
+                    epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
 
                 # Greedy policy (size = batch)  # TODO: is this a good idea?
                 _, next_rows = torch.max(output, dim=1)
-                recon_output, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                               recon_model)
-        if args.wandb:
-            wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}})
-        for step, loss in enumerate(epoch_loss):
-            writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
+                impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                              recon_model)
+        if target is not None:
+            if args.wandb:
+                wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}})
+            for step, loss in enumerate(epoch_loss):
+                writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
     return np.mean(epoch_loss), time.perf_counter() - start
 
 
@@ -367,10 +320,13 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     """
     Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
     """
-    #     model.eval()
+    if not isinstance(model, str):
+        model.eval()
+
     ssims = 0
     f_ssims = 0
     c_ssims = 0
+    r_ssims = 0
     # # strategy: acquisition step: filename: [recons]
     # recons = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     # targets = defaultdict(list)
@@ -395,20 +351,24 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
             gt = gt * std + mean
 
             # Base reconstruction model forward pass
-            recon_output = recon_model_forward_pass(args, recon_model, zf)
+            impro_input = create_impro_model_input(args, recon_model, zf, mask)
 
             c_masked_kspace = masked_kspace.clone()
             c_mask = mask.clone()
             f_masked_kspace = masked_kspace.clone()
             f_mask = mask.clone()
-            norm_recon = recon_output[:, 0:1, :, :] * std + mean
+            r_masked_kspace = masked_kspace.clone()
+            r_mask = mask.clone()
+            norm_recon = impro_input[:, 0:1, :, :] * std + mean
             init_ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean()
 
             batch_ssims = [init_ssim_val.item()]
             f_batch_ssims = [init_ssim_val.item()]
             c_batch_ssims = []
+            r_batch_ssims = []
             if epoch == -1:
                 c_batch_ssims.append(init_ssim_val.item())
+                r_batch_ssims.append(init_ssim_val.item())
 
             # eval_rec = norm_recon.to('cpu')
             # for i in range(eval_rec.size(0)):
@@ -418,7 +378,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
             for step in range(args.acquisition_steps):
                 # Improvement model output
-                output = impro_model_forward_pass(args, model, recon_output, mask.squeeze(1).squeeze(1).squeeze(-1))
+                output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
                 epoch_outputs[step + 1].append(output.to('cpu').numpy())
                 # Greedy policy (size = batch)
                 # TODO: model often (at least initially) seems to want to choose rows that have already been chosen,
@@ -439,18 +399,18 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 f_next_rows = torch.tensor(f_next_rows).long().to(args.device)
 
                 # Acquire this row
-                recon_output, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                               recon_model)
-                norm_recon = recon_output[:, 0:1, :, :] * std + mean
+                impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                              recon_model)
+                norm_recon = impro_input[:, 0:1, :, :] * std + mean
                 # shape = 1
                 ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean()
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
 
                 # Acquire this row
-                f_recon_output, f_zf, f_mean, f_std, f_mask, f_masked_kspace = acquire_row(
+                f_impro_input, f_zf, f_mean, f_std, f_mask, f_masked_kspace = acquire_row(
                     kspace, f_masked_kspace, f_next_rows, f_mask, recon_model)
-                f_norm_recon = f_recon_output[:, 0:1, :, :] * f_std + f_mean
+                f_norm_recon = f_impro_input[:, 0:1, :, :] * f_std + f_mean
                 # shape = 1
                 f_ssim_val = ssim(f_norm_recon, gt, size_average=False, data_range=1e-4).mean()
                 # eventually shape = al_steps
@@ -462,13 +422,13 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
                 # Acquire center row
                 if epoch == -1:
-                    c_flat_unacq = (c_mask[0].squeeze() == 0).nonzero()
+                    c_flat_unacq = (c_mask[0].squeeze() == 0).nonzero().flatten()
                     c_next_row = c_flat_unacq[len(c_flat_unacq) // 2]
                     c_next_rows = torch.tensor([c_next_row] * c_mask.size(0)).long().to(args.device)
-                    c_recon_output, c_zf, c_mean, c_std, c_mask, c_masked_kspace = acquire_row(kspace, c_masked_kspace,
-                                                                                               c_next_rows, c_mask,
-                                                                                               recon_model)
-                    c_norm_recon = c_recon_output[:, 0:1, :, :] * c_std + c_mean
+                    c_impro_input, c_zf, c_mean, c_std, c_mask, c_masked_kspace = acquire_row(kspace, c_masked_kspace,
+                                                                                              c_next_rows, c_mask,
+                                                                                              recon_model)
+                    c_norm_recon = c_impro_input[:, 0:1, :, :] * c_std + c_mean
                     # shape = 1
                     c_ssim_val = ssim(c_norm_recon, gt, size_average=False, data_range=1e-4).mean()
                     # eventually shape = al_steps
@@ -478,10 +438,24 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                     # for i in range(c_eval_rec.size(0)):
                     #     recons[fname[i]]['center'][step + 1].append(c_eval_rec[i].squeeze().numpy())
 
+                    # Acquire random row
+                    r_next_rows_options = [(r_mask[i].squeeze() == 0).nonzero().flatten() for i in range(mask.size(0))]
+                    r_next_rows = torch.tensor([row_options[int(torch.rand(1) * len(row_options))]
+                                                for row_options in r_next_rows_options])
+                    r_impro_input, r_zf, r_mean, r_std, r_mask, r_masked_kspace = acquire_row(kspace, r_masked_kspace,
+                                                                                              r_next_rows, r_mask,
+                                                                                              recon_model)
+                    r_norm_recon = r_impro_input[:, 0:1, :, :] * r_std + r_mean
+                    # shape = 1
+                    r_ssim_val = ssim(r_norm_recon, gt, size_average=False, data_range=1e-4).mean()
+                    # eventually shape = al_steps
+                    r_batch_ssims.append(r_ssim_val.item())
+
             # shape = al_steps
             ssims += np.array(batch_ssims) / len(dev_loader)
             f_ssims += np.array(f_batch_ssims) / len(dev_loader)
             c_ssims += np.array(c_batch_ssims) / len(dev_loader)
+            r_ssims += np.array(r_batch_ssims) / len(dev_loader)
 
     # for fname, vol_gts in targets.items():
     #     for step in range(args.acquisition_steps + 1):
@@ -508,7 +482,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
         wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}})
         wandb.log({'val_f_ssims': {str(key): val for key, val in enumerate(f_ssims)}})
 
-    return ssims, f_ssims, c_ssims, time.perf_counter() - start
+    return ssims, f_ssims, c_ssims, r_ssims, time.perf_counter() - start
 
 
 def visualise(args, epoch, model, display_loader, writer):
@@ -533,9 +507,12 @@ def main(args):
         model = build_impro_model(args)
         # Add mask parameters for training
         args = add_mask_params(args, recon_args)
-        if args.data_parallel:
-            model = torch.nn.DataParallel(model)
-        optimiser = build_optim(args, model.parameters())
+        if not isinstance(model, str):
+            if args.data_parallel:
+                model = torch.nn.DataParallel(model)
+            optimiser = build_optim(args, model.parameters())
+        else:
+            optimiser = None
         best_dev_loss = 1e9
         start_epoch = 0
         # Create directory to store results in
@@ -548,7 +525,8 @@ def main(args):
 
     if args.wandb:
         wandb.config.update(args)
-        wandb.watch(model, log='all')
+        if not isinstance(model, str):
+            wandb.watch(model, log='all')
 
     # Logging
     logging.info(args)
@@ -562,16 +540,17 @@ def main(args):
     # Initialise summary writer
     writer = SummaryWriter(log_dir=args.run_dir / 'summary')
 
-    # Parameter counting
-    if args.verbose >= 1:
-        print('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
-            count_parameters(recon_model), count_trainable_parameters(recon_model),
-            count_untrainable_parameters(recon_model)))
-        print('Improvement model parameters: total {}, of which {} trainable and {} untrainable'.format(
-            count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
-    if args.verbose >= 3:
-        for p in model.parameters():
-            print(p.shape, p.numel())
+    if not isinstance(model, str):
+        # Parameter counting
+        if args.verbose >= 1:
+            print('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
+                count_parameters(recon_model), count_trainable_parameters(recon_model),
+                count_untrainable_parameters(recon_model)))
+            print('Improvement model parameters: total {}, of which {} trainable and {} untrainable'.format(
+                count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
+        if args.verbose >= 3:
+            for p in model.parameters():
+                print(p.shape, p.numel())
 
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
@@ -581,23 +560,30 @@ def main(args):
     # train_loader = [first_batch] * 10
     # dev_loader = [first_batch]
 
-    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    if optimiser is not None:
+        scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    else:
+        scheduler = None
 
     # Training and evaluation
     k = args.num_target_rows
 
-    dev_ssims, f_dev_ssims, c_dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
+    dev_ssims, f_dev_ssims, c_dev_ssims, r_dev_ssims, dev_ssim_time = evaluate_recons(
+        args, -1, recon_model, model, dev_loader, writer)
 
     dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
     f_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(f_dev_ssims)])
-    c_dev_ssims_str  = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(c_dev_ssims)])
+    c_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(c_dev_ssims)])
+    r_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(r_dev_ssims)])
     logging.info(f'C_DevSSIM = [{c_dev_ssims_str}]')
+    logging.info(f'R_DevSSIM = [{r_dev_ssims_str}]')
     logging.info(f'F_DevSSIM = [{f_dev_ssims_str}]')
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
     for epoch in range(start_epoch, args.num_epochs):
-        scheduler.step(epoch)
+        if scheduler is not None:
+            scheduler.step(epoch)
         # eps decays a factor e after num_epochs / eps_decay_rate epochs: i.e. after 1/eps_decay_rate of all epochs
         # This way, the same factor decay happens after the same fraction of epochs, for various values for num_epochs
         # Examples for eps_decay_rate = 5:
@@ -607,14 +593,16 @@ def main(args):
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k)
         # TODO: do both of these? Make more efficient?
         dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
-        dev_ssims, f_dev_ssims, _, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
+        dev_ssims, f_dev_ssims, _, _, dev_ssim_time = evaluate_recons(
+            args, epoch, recon_model, model, dev_loader, writer)
         # visualise(args, epoch, model, display_loader, writer)
 
-        is_new_best = dev_loss < best_dev_loss
-        best_dev_loss = min(best_dev_loss, dev_loss)
-        save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
-        if args.wandb:
-            wandb.save('model.h5')
+        if not isinstance(model, str):
+            is_new_best = dev_loss < best_dev_loss
+            best_dev_loss = min(best_dev_loss, dev_loss)
+            save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
+            if args.wandb:
+                wandb.save('model.h5')
 
         dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
         f_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(f_dev_ssims)])
@@ -646,7 +634,7 @@ def create_arg_parser():
                         help='Path to the dataset. Required for fastMRI training.')
     parser.add_argument('--sample-rate', type=float, default=1.,
                         help='Fraction of total volumes to include')
-    parser.add_argument('--acquisition', type=str, default=None,
+    parser.add_argument('--acquisition', type=str, default='CORPD_FBK',
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
 
@@ -656,14 +644,20 @@ def create_arg_parser():
                         'set to zero_filled.')
     parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'dist_gauss', 'zero_filled'], required=True,
                         help='Reconstruction model name corresponding to model checkpoint.')
-    # parser.add_argument('--use-uncertainty', action='store_true',
-    #                     help='Whether to use reconstruction model uncertainty as input to the improvement model.')
+    parser.add_argument('--use-sensitivity',  action='store_true',
+                        help='Whether to use reconstruction model sensitivity as input to the improvement model.')
+    parser.add_argument('--num-sens-samples', type=int, default=10,
+                        help='Number of reconstruction model samples to average the sensitivity map over.')
+
+    parser.add_argument('--center-volume', action='store_true',
+                        help='If set, only the center slices of a volume will be included in the dataset. This '
+                             'removes the most noisy images from the data.')
     parser.add_argument('--use-recon-mask-params', action='store_true',
                         help='Whether to use mask parameter settings (acceleration and center fraction) that the '
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
 
     parser.add_argument('--impro-model-name', choices=['convpool', 'convpoolmask', 'convbottle', 'maskfc', 'maskconv',
-                                                       'convpoolmaskconv', 'location'],
+                                                       'convpoolmaskconv', 'location', 'center', 'random'],
                         required=True, help='Improvement model name (if using resume, must correspond to model at the '
                         'improvement model checkpoint.')
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see

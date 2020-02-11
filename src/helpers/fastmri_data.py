@@ -13,8 +13,7 @@ class SliceData(Dataset):
     A PyTorch Dataset that provides access to MR image slices.
     """
 
-    def __init__(self, root, transform, challenge, sample_rate=1, max_slices=None,
-                 acquisition=None):
+    def __init__(self, root, transform, challenge, sample_rate=1, acquisition=None, center_volume=False):
         """
         Args:
             root (pathlib.Path): Path to the dataset.
@@ -51,11 +50,10 @@ class SliceData(Dataset):
                                  "or None; not: {}".format(acquisition))
             kspace = h5py.File(fname, 'r')['kspace']
             num_slices = kspace.shape[0]
-            self.examples += [(fname, slice) for slice in range(num_slices)]
-            if max_slices is not None:
-                if len(self.examples) > max_slices:
-                    self.examples = self.examples[:max_slices]
-                    break
+            if center_volume:  # Only use the slices in the center half of the volume
+                self.examples += [(fname, slice) for slice in range(num_slices // 4, 3 * num_slices // 4, 1)]
+            else:
+                self.examples += [(fname, slice) for slice in range(num_slices)]
 
     def __len__(self):
         return len(self.examples)
@@ -151,12 +149,6 @@ class DataTransform:
         center crop, and then transforming back. This function does that.
         """
 
-        def rfft2(data):
-            data = transforms.ifftshift(data, dim=(-2, -1))
-            data = torch.rfft(data, 2, normalized=True, onesided=False)
-            data = transforms.fftshift(data, dim=(-3, -2))
-            return data
-
         # Inverse Fourier Transform to get zero filled solution
         image = transforms.ifft2(kspace)
         # Crop input image to get correctly sized kspace
@@ -164,7 +156,7 @@ class DataTransform:
         # Take complex abs to get a real image
         image = transforms.complex_abs(image)
         # rfft this image to get the kspace that will be used in active learning
-        kspace = rfft2(image)
+        kspace = transforms.rfft2(image)
         return kspace
 
 
@@ -178,7 +170,8 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
         sample_rate=args.sample_rate,
         max_slices=args.max_train_slices,
         challenge=args.challenge,
-        acquisition=args.acquisition
+        acquisition=args.acquisition,
+        center_volume=args.center_volume
     )
     # use_seed=True ensures the same mask is used for all slices in a given volume every time. This means the
     # development set stays the same with every use. Note that this also means any metrics based on the mask will
@@ -189,7 +182,8 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
         sample_rate=args.sample_rate,
         max_slices=args.max_dev_slices,
         challenge=args.challenge,
-        acquisition=args.acquisition
+        acquisition=args.acquisition,
+        center_volume=args.center_volume
     )
     # test_data = SliceData(
     #     root=args.data_path / f'{args.challenge}_test_al',
@@ -197,6 +191,7 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
     #     sample_rate=args.sample_rate,
     #     max_slices=args.max_test_slices,
     #     challenge=args.challenge,
-    #     acquisition=args.acquisition
+    #     acquisition=args.acquisition,
+    #     center_volume=args.center_volume
     # )
     return train_data, dev_data

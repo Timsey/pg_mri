@@ -265,3 +265,10 @@ def ifftshift(x, dim=None):
     else:
         shift = [(x.shape[i] + 1) // 2 for i in dim]
     return roll(x, shift, dim)
+
+
+def rfft2(data):
+    data = ifftshift(data, dim=(-2, -1))
+    data = torch.rfft(data, 2, normalized=True, onesided=False)
+    data = fftshift(data, dim=(-3, -2))
+    return data

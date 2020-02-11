@@ -127,11 +127,11 @@ class UnetModel(nn.Module):
 
 
 def build_kengal_model(recon_args, args):
-    gauss_model = UnetModel(
+    kengal_model = UnetModel(
         in_chans=1,
         out_chans=2,
         chans=recon_args.num_chans,
         num_pool_layers=recon_args.num_pools,
         drop_prob=recon_args.drop_prob
     ).to(args.device)
-    return gauss_model
+    return kengal_model

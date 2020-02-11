@@ -12,23 +12,23 @@ from src.helpers.cifar_data import create_cifar10_datasets
 TrainPair = namedtuple('TrainPair', ('step', 'predictions', 'target'))
 
 
-class ReplayMemory:
-    def __init__(self, capacity):
-        self.capacity = capacity
-        self.memory = []
-        self.position = 0
-
-    def push(self, step, predictions, target):
-        if len(self.memory) < self.capacity:
-            self.memory.append(None)  # Add empty entry to overwrite if memory not full yet
-        self.memory[self.position] = TrainPair(step, predictions, target)
-        self.position = (self.position + 1) % self.capacity
-
-    def sample(self, batch_size):
-        return random.sample(self.memory, batch_size)
-
-    def __len__(self):
-        return len(self.memory)
+# class ReplayMemory:
+#     def __init__(self, capacity):
+#         self.capacity = capacity
+#         self.memory = []
+#         self.position = 0
+#
+#     def push(self, step, predictions, target):
+#         if len(self.memory) < self.capacity:
+#             self.memory.append(None)  # Add empty entry to overwrite if memory not full yet
+#         self.memory[self.position] = TrainPair(step, predictions, target)
+#         self.position = (self.position + 1) % self.capacity
+# 
+#     def sample(self, batch_size):
+#         return random.sample(self.memory, batch_size)
+#
+#     def __len__(self):
+#         return len(self.memory)
 
 
 class MaskFunc:

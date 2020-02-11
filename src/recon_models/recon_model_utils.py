@@ -1,8 +1,63 @@
 import torch
-from src.helpers import transforms
+from torch.distributions import Normal, Laplace
 
+from src.helpers import transforms
 from src.recon_models.unet_dist_model import build_dist_model
 from src.recon_models.unet_kengal_model import build_kengal_model
+
+
+def create_impro_model_input(args, recon_model, zf, mask):
+    assert len(mask.shape) == 5
+    # mask shape: batch x 1 x columns x rows x 2
+    recon_output = recon_model_forward_pass(args, recon_model, zf)
+    if args.use_sensitivity:
+        assert recon_output.size(1) == 2, "Calculating sensitivity map assumes reconstruction model outputs 2 channels."
+        model_name = args.recon_model_name
+        # Calculate sensitivity map
+        # Set up distribution
+        loc = recon_output[:, 0:1, :, :]
+        logscale = recon_output[:, 1:2, :, :]
+        if model_name == 'dist_gauss':
+            dist = Normal(loc, logscale)
+            # Draw reconstruction samples
+            # samples x batch x 1 x res x res
+            samples = dist.sample((args.num_sens_samples,))
+            # Calculate sensitivity as Fourier{(sample - loc) / scale}
+            # samples x batch x 1 x res x res x 2
+            sens = (samples - loc) / torch.exp(logscale)
+            sens = transforms.rfft2(sens)
+        elif model_name == 'kengal_laplace':
+            dist = Laplace(loc, logscale)
+            # Draw reconstruction samples
+            # samples x batch x 1 x res x res
+            samples = dist.sample((args.num_sens_samples,))
+            # Calculate sensitivity as Fourier{(sample - loc) / scale}
+            # samples x batch x 1 x res x res x 2
+            sens = torch.where(samples > loc,
+                               samples / torch.exp(logscale),
+                               -1 * samples / torch.exp(logscale))
+            sens = transforms.rfft2(sens)
+        else:
+            return ValueError("Calculating sensitivity for model of type {} is not supported.".format(model_name))
+
+        # Average over samples
+        # batch x 1 x res x res x 2
+        sens = torch.mean(sens, dim=0)
+        # Mask rows that have been sampled already
+        sens = (mask == 0).float() * sens
+        # Remove vestigial channel dimension
+        # batch x res x res x 2
+        sens = sens.squeeze()
+        # Turn real and imaginary dimension into channel dimension
+        # batch x 2 x res x res
+        sens = sens.permute(0, 3, 1, 2)
+        # Add sensitivity map to reconstruction loc and scale
+        # TODO: Use average of samples as recon (channel 1) here instead?
+        recon_output = torch.cat((loc, sens), dim=1)
+
+    assert recon_output.size(1) == args.in_chans, ("Number of improvement model channels ({}) does not match number of "
+                                                   "input channels ({})".format(recon_output.size(1), args.in_chans))
+    return recon_output
 
 
 def recon_model_forward_pass(args, recon_model, zf):
@@ -13,13 +68,13 @@ def recon_model_forward_pass(args, recon_model, zf):
         loc, logscale = recon_model(zf)
         output = torch.cat((loc, logscale), dim=1)
     elif model_name == 'zero_filled':
-        output = torch.cat((zf, zf), dim=1)
+        output = zf
     else:
         raise ValueError('Model type {} is not supported'.format(model_name))
 
-    if args.in_chans == 1:  # not using uncertainty
-        output = output[:, 0:1, :, :]
-    # Output of size batch x channel x resolution x resolution
+    # Restrict input channels
+    output = output[:, 0:args.in_chans, :, :]
+    # Output of size batch_size x in_chans x resolution x resolution
     return output
 
 
