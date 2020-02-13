@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import logging
 import random
 
 from collections import namedtuple
@@ -9,8 +10,7 @@ from src.helpers.fastmri_data import create_fastmri_datasets
 from src.helpers.cifar_data import create_cifar10_datasets
 
 
-TrainPair = namedtuple('TrainPair', ('step', 'predictions', 'target'))
-
+# TrainPair = namedtuple('TrainPair', ('step', 'predictions', 'target'))
 
 # class ReplayMemory:
 #     def __init__(self, capacity):
@@ -125,6 +125,7 @@ def create_datasets(args):
 
 def create_data_loaders(args):
     train_data, dev_data = create_datasets(args)
+    logging.info('Train slices: {}, Dev slices: {}'.format(len(train_data), len(dev_data)))
 
     train_loader = DataLoader(
         dataset=train_data,

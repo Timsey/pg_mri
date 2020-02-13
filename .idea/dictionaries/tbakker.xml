@@ -37,6 +37,7 @@
       <w>maskfc</w>
       <w>meanenc</w>
       <w>mrimpro</w>
+      <w>mult</w>
       <w>multicoil</w>
       <w>nongreedy</w>
       <w>outshoots</w>
@@ -44,6 +45,7 @@
       <w>pytorch</w>
       <w>randrow</w>
       <w>randrows</w>
+      <w>rfft</w>
       <w>savestr</w>
       <w>singlecoil</w>
       <w>slic</w>

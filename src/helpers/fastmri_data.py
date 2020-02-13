@@ -1,4 +1,3 @@
-import torch
 import pathlib
 import random
 import h5py
@@ -51,7 +50,7 @@ class SliceData(Dataset):
             kspace = h5py.File(fname, 'r')['kspace']
             num_slices = kspace.shape[0]
             if center_volume:  # Only use the slices in the center half of the volume
-                self.examples += [(fname, slice) for slice in range(num_slices // 4, 3 * num_slices // 4, 1)]
+                self.examples += [(fname, slice) for slice in range(num_slices // 4, 3 * num_slices // 4)]
             else:
                 self.examples += [(fname, slice) for slice in range(num_slices)]
 
@@ -168,7 +167,6 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
         root=train_path,
         transform=DataTransform(train_mask, args.resolution, args.challenge),
         sample_rate=args.sample_rate,
-        max_slices=args.max_train_slices,
         challenge=args.challenge,
         acquisition=args.acquisition,
         center_volume=args.center_volume
@@ -176,11 +174,12 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
     # use_seed=True ensures the same mask is used for all slices in a given volume every time. This means the
     # development set stays the same with every use. Note that this also means any metrics based on the mask will
     # be consistently evaluated on the same volumes every time.
+    mult = 2 if args.sample_rate == 0.04 else 1  # TODO: this is now hardcoded to get more validation samples: fix this
+    dev_sample_rate = args.sample_rate * mult
     dev_data = SliceData(
-        root= dev_path,
+        root=dev_path,
         transform=DataTransform(dev_mask, args.resolution, args.challenge, use_seed=True),
-        sample_rate=args.sample_rate,
-        max_slices=args.max_dev_slices,
+        sample_rate=dev_sample_rate,
         challenge=args.challenge,
         acquisition=args.acquisition,
         center_volume=args.center_volume
@@ -189,7 +188,6 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
     #     root=args.data_path / f'{args.challenge}_test_al',
     #     transform=DataTransform(test_mask, args.resolution, args.challenge, use_seed=True),
     #     sample_rate=args.sample_rate,
-    #     max_slices=args.max_test_slices,
     #     challenge=args.challenge,
     #     acquisition=args.acquisition,
     #     center_volume=args.center_volume

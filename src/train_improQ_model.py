@@ -14,9 +14,6 @@ from torch.autograd import Variable
 from torchviz import make_dot
 from tensorboardX import SummaryWriter
 
-# Importing Arguments is required for loading of Gauss reconstruction model
-from src.recon_models.unet_dist_model import Arguments
-
 from src.helpers.torch_metrics import ssim
 from src.helpers.losses import l1_loss_gradfixed, huber_loss
 from src.helpers.metrics import Metrics, METRIC_FUNCS
@@ -217,7 +214,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # optimiser.step()
         if target is not None:
             if args.verbose >= 3:
-                print('Time to train single batch of size {} for {} steps: {:.3f}'.format(
+                logging.info('Time to train single batch of size {} for {} steps: {:.3f}'.format(
                     args.batch_size, args.acquisition_steps, time.perf_counter() - at))
 
             if it % args.report_interval == 0:
@@ -543,14 +540,14 @@ def main(args):
     if not isinstance(model, str):
         # Parameter counting
         if args.verbose >= 1:
-            print('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
+            logging.info('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
                 count_parameters(recon_model), count_trainable_parameters(recon_model),
                 count_untrainable_parameters(recon_model)))
-            print('Improvement model parameters: total {}, of which {} trainable and {} untrainable'.format(
+            logging.info('Improvement model parameters: total {}, of which {} trainable and {} untrainable'.format(
                 count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
         if args.verbose >= 3:
             for p in model.parameters():
-                print(p.shape, p.numel())
+                logging.info(p.shape, p.numel())
 
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
@@ -592,17 +589,21 @@ def main(args):
         eps = np.exp(np.log(args.start_eps) - args.eps_decay_rate * epoch / args.num_epochs)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k)
         # TODO: do both of these? Make more efficient?
-        dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
         dev_ssims, f_dev_ssims, _, _, dev_ssim_time = evaluate_recons(
             args, epoch, recon_model, model, dev_loader, writer)
         # visualise(args, epoch, model, display_loader, writer)
 
-        if not isinstance(model, str):
-            is_new_best = dev_loss < best_dev_loss
-            best_dev_loss = min(best_dev_loss, dev_loss)
-            save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
-            if args.wandb:
-                wandb.save('model.h5')
+        if args.do_dev_loss:
+            dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
+            if not isinstance(model, str):
+                is_new_best = dev_loss < best_dev_loss
+                best_dev_loss = min(best_dev_loss, dev_loss)
+                save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
+                if args.wandb:
+                    wandb.save('model.h5')
+        else:
+            dev_loss = 0
+            dev_loss_time = 0
 
         dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
         f_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(f_dev_ssims)])
@@ -642,7 +643,7 @@ def create_arg_parser():
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, default=None,
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
-    parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'dist_gauss', 'zero_filled'], required=True,
+    parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'kengal_gauss', 'zero_filled'], required=True,
                         help='Reconstruction model name corresponding to model checkpoint.')
     parser.add_argument('--use-sensitivity',  action='store_true',
                         help='Whether to use reconstruction model sensitivity as input to the improvement model.')
@@ -723,12 +724,9 @@ def create_arg_parser():
     parser.add_argument('--checkpoint', type=str,
                         help='Path to an existing checkpoint. Used along with "--resume"')
 
-    parser.add_argument('--max-train-slices', type=int, default=None,
-                        help='How many slices to train on maximally."')
-    parser.add_argument('--max-dev-slices', type=int, default=None,
-                        help='How many slices to evaluate on maximally."')
-    parser.add_argument('--max-test-slices', type=int, default=None,
-                        help='How many slices to test on maximally."')
+    parser.add_argument('--do-dev-loss', action='store_true',
+                        help='Whether to compute dev loss during training (generally takes ~1/5th of train time.'
+                             'Not to be confused with SSIM evaluation, which is always done.')
     parser.add_argument('--verbose', type=int, default=1,
                         help='Set verbosity level. Lowest=0, highest=4."')
     return parser

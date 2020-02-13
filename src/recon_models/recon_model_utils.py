@@ -2,7 +2,6 @@ import torch
 from torch.distributions import Normal, Laplace
 
 from src.helpers import transforms
-from src.recon_models.unet_dist_model import build_dist_model
 from src.recon_models.unet_kengal_model import build_kengal_model
 
 
@@ -17,7 +16,7 @@ def create_impro_model_input(args, recon_model, zf, mask):
         # Set up distribution
         loc = recon_output[:, 0:1, :, :]
         logscale = recon_output[:, 1:2, :, :]
-        if model_name == 'dist_gauss':
+        if model_name == 'kengal_gauss':
             dist = Normal(loc, logscale)
             # Draw reconstruction samples
             # samples x batch x 1 x res x res
@@ -62,11 +61,8 @@ def create_impro_model_input(args, recon_model, zf, mask):
 
 def recon_model_forward_pass(args, recon_model, zf):
     model_name = args.recon_model_name
-    if model_name == 'kengal_laplace':
+    if model_name in ['kengal_laplace', 'kengal_gauss']:
         output = recon_model(zf)
-    elif model_name == 'dist_gauss':
-        loc, logscale = recon_model(zf)
-        output = torch.cat((loc, logscale), dim=1)
     elif model_name == 'zero_filled':
         output = zf
     else:
@@ -99,10 +95,8 @@ def load_recon_model(args):
 
 def build_recon_model(recon_args, args):
     model_name = args.recon_model_name
-    if model_name == 'kengal_laplace':
+    if model_name in ['kengal_laplace', 'kengal_gauss']:
         recon_model = build_kengal_model(recon_args, args)
-    elif model_name == 'dist_gauss':
-        recon_model = build_dist_model(recon_args, args)
     else:
         raise ValueError("Recon model name {} is not a valid option.".format(model_name))
     return recon_model
