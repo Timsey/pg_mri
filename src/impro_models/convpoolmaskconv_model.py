@@ -72,18 +72,17 @@ class Conv1DBlock(nn.Module):
 
 
 class MaskEncoder(nn.Module):
-    def __init__(self, resolution, chans):
+    def __init__(self, resolution, chans, depth):
         super().__init__()
 
         self.resolution = resolution
-
-        num_up_and_down_layers = 3
+        self.depth = depth
 
         layers = [Conv1DBlock(1, chans)]
-        for _ in range(num_up_and_down_layers):
+        for _ in range(depth):
             layers.append(Conv1DBlock(chans, chans * 2))
             chans = chans * 2
-        for _ in range(num_up_and_down_layers):
+        for _ in range(depth):
             layers.append(Conv1DBlock(chans, chans // 2))
             chans = chans // 2
         # No ReLU for the last layer
@@ -99,7 +98,7 @@ class MaskEncoder(nn.Module):
 
 
 class ConvPoolMaskConvModel(nn.Module):
-    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob, fc_size):
+    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob, fc_size, depth):
         """
         Args:
             in_chans (int): Number of channels in the input to the U-Net model.
@@ -117,6 +116,7 @@ class ConvPoolMaskConvModel(nn.Module):
         self.four_pools = four_pools
         self.drop_prob = drop_prob
         self.fc_size = fc_size
+        self.depth = depth
 
         # Size of image encoding after flattening of convolutional output
         # There are 1 + num_pool_layers blocks
@@ -145,7 +145,7 @@ class ConvPoolMaskConvModel(nn.Module):
             nn.LeakyReLU()
         )
 
-        self.mask_encoding = MaskEncoder(resolution, chans)
+        self.mask_encoding = MaskEncoder(resolution, chans, depth)
 
         self.fc_out = nn.Sequential(
             nn.Linear(in_features=self.fc_size+resolution, out_features=self.fc_size),
@@ -193,6 +193,7 @@ def build_impro_convpoolmaskconv_model(args):
         num_pool_layers=args.num_pools,
         four_pools=args.of_which_four_pools,
         drop_prob=args.drop_prob,
-        fc_size=args.fc_size
+        fc_size=args.fc_size,
+        depth=args.maskconv_depth
     ).to(args.device)
     return model

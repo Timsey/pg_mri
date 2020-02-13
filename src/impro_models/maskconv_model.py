@@ -27,18 +27,17 @@ class Conv1DBlock(nn.Module):
 
 
 class MaskConvModel(nn.Module):
-    def __init__(self, resolution, chans):
+    def __init__(self, resolution, chans, depth):
         super().__init__()
 
         self.resolution = resolution
-
-        num_up_and_down_layers = 3
+        self.depth = depth
 
         layers = [Conv1DBlock(1, chans)]
-        for _ in range(num_up_and_down_layers):
+        for _ in range(depth):
             layers.append(Conv1DBlock(chans, chans * 2))
             chans = chans * 2
-        for _ in range(num_up_and_down_layers):
+        for _ in range(depth):
             layers.append(Conv1DBlock(chans, chans // 2))
             chans = chans // 2
         # No ReLU for the last layer
@@ -56,6 +55,7 @@ class MaskConvModel(nn.Module):
 def build_impro_maskconv_model(args):
     model = MaskConvModel(
         resolution=args.resolution,
-        chans=args.num_chans
+        chans=args.num_chans,
+        depth=args.maskconv_depth
     ).to(args.device)
     return model
