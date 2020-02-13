@@ -243,7 +243,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
 
         if args.wandb:
-            wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch)
+            wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
 
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
@@ -307,7 +307,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                                                                               recon_model)
         if target is not None:
             if args.wandb:
-                wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch)
+                wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
             for step, loss in enumerate(epoch_loss):
                 writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
     return np.mean(epoch_loss), time.perf_counter() - start
@@ -476,8 +476,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
         writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
 
     if args.wandb:
-        wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch)
-        wandb.log({'val_f_ssims': {str(key): val for key, val in enumerate(f_ssims)}}, step=epoch)
+        wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+        wandb.log({'val_f_ssims': {str(key): val for key, val in enumerate(f_ssims)}}, step=epoch + 1)
 
     return ssims, f_ssims, c_ssims, r_ssims, time.perf_counter() - start
 
