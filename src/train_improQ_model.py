@@ -28,7 +28,7 @@ from src.impro_models.impro_model_utils import (load_impro_model, build_impro_mo
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-torch.autograd.set_detect_anomaly(True)
+# torch.autograd.set_detect_anomaly(True)
 
 
 targets = defaultdict(lambda: defaultdict(lambda: 0))
@@ -331,11 +331,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     # c_metrics = {step: Metrics(METRIC_FUNCS) for step in range(args.acquisition_steps + 1)}
 
     epoch_outputs = defaultdict(list)
-
+    tbs = 0
     start = time.perf_counter()
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
             kspace, masked_kspace, mask, zf, gt, mean, std, fname, slices = data
+            tbs += mask.size(0)
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
             masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
@@ -357,7 +358,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
             r_masked_kspace = masked_kspace.clone()
             r_mask = mask.clone()
             norm_recon = impro_input[:, 0:1, :, :] * std + mean
-            init_ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean()
+            init_ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
 
             batch_ssims = [init_ssim_val.item()]
             f_batch_ssims = [init_ssim_val.item()]
@@ -400,7 +401,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                                                                               recon_model)
                 norm_recon = impro_input[:, 0:1, :, :] * std + mean
                 # shape = 1
-                ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean()
+                ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
 
@@ -409,7 +410,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                     kspace, f_masked_kspace, f_next_rows, f_mask, recon_model)
                 f_norm_recon = f_impro_input[:, 0:1, :, :] * f_std + f_mean
                 # shape = 1
-                f_ssim_val = ssim(f_norm_recon, gt, size_average=False, data_range=1e-4).mean()
+                f_ssim_val = ssim(f_norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
                 # eventually shape = al_steps
                 f_batch_ssims.append(f_ssim_val.item())
 
@@ -427,7 +428,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                                                                                               recon_model)
                     c_norm_recon = c_impro_input[:, 0:1, :, :] * c_std + c_mean
                     # shape = 1
-                    c_ssim_val = ssim(c_norm_recon, gt, size_average=False, data_range=1e-4).mean()
+                    c_ssim_val = ssim(c_norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
                     # eventually shape = al_steps
                     c_batch_ssims.append(c_ssim_val.item())
 
@@ -444,16 +445,20 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                                                                                               recon_model)
                     r_norm_recon = r_impro_input[:, 0:1, :, :] * r_std + r_mean
                     # shape = 1
-                    r_ssim_val = ssim(r_norm_recon, gt, size_average=False, data_range=1e-4).mean()
+                    r_ssim_val = ssim(r_norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
                     # eventually shape = al_steps
                     r_batch_ssims.append(r_ssim_val.item())
 
             # shape = al_steps
-            ssims += np.array(batch_ssims) / len(dev_loader)
-            f_ssims += np.array(f_batch_ssims) / len(dev_loader)
-            c_ssims += np.array(c_batch_ssims) / len(dev_loader)
-            r_ssims += np.array(r_batch_ssims) / len(dev_loader)
+            ssims += np.array(batch_ssims)
+            f_ssims += np.array(f_batch_ssims)
+            c_ssims += np.array(c_batch_ssims)
+            r_ssims += np.array(r_batch_ssims)
 
+    ssims /= tbs
+    f_ssims /= tbs
+    c_ssims /= tbs
+    r_ssims /= tbs
     # for fname, vol_gts in targets.items():
     #     for step in range(args.acquisition_steps + 1):
     #         if epoch == -1:

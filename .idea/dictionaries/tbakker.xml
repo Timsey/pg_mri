@@ -41,7 +41,9 @@
       <w>multicoil</w>
       <w>nongreedy</w>
       <w>outshoots</w>
+      <w>preds</w>
       <w>pretrained</w>
+      <w>psnr</w>
       <w>pythonpath</w>
       <w>pytorch</w>
       <w>randrow</w>
