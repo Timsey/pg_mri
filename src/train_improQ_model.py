@@ -18,7 +18,8 @@ from src.helpers.torch_metrics import ssim
 from src.helpers.losses import l1_loss_gradfixed, huber_loss
 from src.helpers.metrics import Metrics, METRIC_FUNCS
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
-                               count_trainable_parameters, count_untrainable_parameters, plot_grad_flow)
+                               count_trainable_parameters, count_untrainable_parameters, plot_grad_flow,
+                               save_sensitivity)
 from src.helpers.data_loading import create_data_loaders
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
                                                 recon_model_forward_pass, create_impro_model_input, load_recon_model)
@@ -350,6 +351,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
             # Base reconstruction model forward pass
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
+            if args.save_sens:
+                save_sensitivity(args, impro_input, epoch, 0, it)
 
             c_masked_kspace = masked_kspace.clone()
             c_mask = mask.clone()
@@ -399,6 +402,9 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 # Acquire this row
                 impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                               recon_model)
+                if args.save_sens:
+                    save_sensitivity(args, impro_input, epoch, step + 1, it)
+
                 norm_recon = impro_input[:, 0:1, :, :] * std + mean
                 # shape = 1
                 ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
@@ -485,11 +491,6 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
         wandb.log({'val_f_ssims': {str(key): val for key, val in enumerate(f_ssims)}}, step=epoch + 1)
 
     return ssims, f_ssims, c_ssims, r_ssims, time.perf_counter() - start
-
-
-def visualise(args, epoch, model, display_loader, writer):
-    # TODO: What to visualise here?
-    pass
 
 
 def main(args):
@@ -654,6 +655,8 @@ def create_arg_parser():
                         help='Whether to use reconstruction model sensitivity as input to the improvement model.')
     parser.add_argument('--num-sens-samples', type=int, default=10,
                         help='Number of reconstruction model samples to average the sensitivity map over.')
+    parser.add_argument('--save-sens', action='store_true',
+                        help='Whether to save some sensitivity maps at SSIM evaluation time.')
 
     parser.add_argument('--center-volume', action='store_true',
                         help='If set, only the center slices of a volume will be included in the dataset. This '

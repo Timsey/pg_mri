@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
+from torchvision.utils import save_image
+
 
 def save_json(path, data):
     with open(path, 'w') as f:
@@ -105,3 +107,10 @@ def plot_grad_flow(named_parameters):
                 Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
     plt.tight_layout()
     return figure
+
+
+def save_sensitivity(args, impro_input, epoch, step, batch):
+    args.sens_dir = args.run_dir / 'sensitivity' / 'epoch{}'.format(epoch) / 'step{}'.format(step)
+    args.sens_dir.mkdir(parents=True, exist_ok=True)
+    save_image(impro_input[0, 1:2, :, :], args.sens_dir / 'slice{}_re.png'.format(batch * args.batch_size + 1))
+    save_image(impro_input[0, 2:3, :, :], args.sens_dir / 'slice{}_im.png'.format(batch * args.batch_size + 1))

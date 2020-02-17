@@ -42,6 +42,10 @@ def create_impro_model_input(args, recon_model, zf, mask):
         # Average over samples
         # batch x 1 x res x res x 2
         sens = torch.mean(sens, dim=0)
+        # Instance normalisation (over pixels)
+        sens = (sens - torch.mean(sens, dim=(-2, -3), keepdim=True)) / torch.std(sens, dim=(-2, -3), keepdim=True)
+        # f = open(args.run_dir / 'sensitivity.pkl', 'wb')
+        # pickle.dump(sens.to('cpu').numpy(), f)
         # Mask rows that have been sampled already
         sens = (mask == 0).float() * sens
         # Remove vestigial channel dimension
