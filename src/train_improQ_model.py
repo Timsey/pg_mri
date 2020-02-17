@@ -693,6 +693,8 @@ def create_arg_parser():
                         "for the FC layers that follow. Only used for 'bottle' models.")
     parser.add_argument('--fc-size', default=512, type=int, help='Size (width) of fully connected layer(s).')
     parser.add_argument('--maskconv-depth', default=3, type=int, help='One-way layer depth of maskconv modules.')
+    parser.add_argument('--arch', default='comb_mask', choices=['loc_mask', 'comb_nomask', 'comb_mask'],
+                        help='Type of architecture to use in convpoolmaskconv models.')
 
     parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')

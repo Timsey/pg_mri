@@ -98,7 +98,7 @@ class MaskEncoder(nn.Module):
 
 
 class ConvPoolMaskConvModel(nn.Module):
-    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob, fc_size, depth):
+    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob, fc_size, depth, arch):
         """
         Args:
             in_chans (int): Number of channels in the input to the U-Net model.
@@ -117,6 +117,7 @@ class ConvPoolMaskConvModel(nn.Module):
         self.drop_prob = drop_prob
         self.fc_size = fc_size
         self.depth = depth
+        self.arch = arch
 
         # Size of image encoding after flattening of convolutional output
         # There are 1 + num_pool_layers blocks
@@ -147,11 +148,19 @@ class ConvPoolMaskConvModel(nn.Module):
 
         self.mask_encoding = MaskEncoder(resolution, chans, depth)
 
-        self.fc_out = nn.Sequential(
-            nn.Linear(in_features=self.fc_size+resolution, out_features=self.fc_size),
-            nn.LeakyReLU(),
-            nn.Linear(in_features=self.fc_size, out_features=resolution)
-        )
+        if self.arch == 'loc_mask':
+            self.fc_out = nn.Sequential(
+                nn.Linear(in_features=self.fc_size, out_features=self.fc_size),
+                nn.LeakyReLU(),
+                nn.Linear(in_features=self.fc_size, out_features=resolution)
+            )
+
+        elif self.arch in ['comb_nomask', 'comb_mask']:
+            self.fc_out = nn.Sequential(
+                nn.Linear(in_features=self.fc_size+resolution, out_features=self.fc_size),
+                nn.LeakyReLU(),
+                nn.Linear(in_features=self.fc_size, out_features=resolution)
+            )
 
     def forward(self, image, mask):
         """
@@ -176,12 +185,21 @@ class ConvPoolMaskConvModel(nn.Module):
         mask_emb = self.mask_encoding(mask)
         assert len(mask_emb.shape) == 2
 
-        # First dimension is batch dimension
-        # Concatenate among second (last) dimension
-        combined_emb = torch.cat((image_emb, mask_emb), dim=-1)
-        combined_emb = self.fc_out(combined_emb)
-        # pred = combined_emb
-        pred = combined_emb * mask_emb  # 'masking'
+        if self.arch == 'loc_mask':
+            image_emb = self.fc_out(image_emb)
+            pred = image_emb * mask_emb
+        elif self.arch == 'comb_nomask':
+            # First dimension is batch dimension
+            # Concatenate among second (last) dimension
+            combined_emb = torch.cat((image_emb, mask_emb), dim=-1)
+            combined_emb = self.fc_out(combined_emb)
+            pred = combined_emb
+        elif self.arch == 'comb_mask':
+            # First dimension is batch dimension
+            # Concatenate among second (last) dimension
+            combined_emb = torch.cat((image_emb, mask_emb), dim=-1)
+            combined_emb = self.fc_out(combined_emb)
+            pred = combined_emb * mask_emb  # 'masking'
         return pred
 
 
@@ -194,6 +212,7 @@ def build_impro_convpoolmaskconv_model(args):
         four_pools=args.of_which_four_pools,
         drop_prob=args.drop_prob,
         fc_size=args.fc_size,
-        depth=args.maskconv_depth
+        depth=args.maskconv_depth,
+        arch=args.arch
     ).to(args.device)
     return model
