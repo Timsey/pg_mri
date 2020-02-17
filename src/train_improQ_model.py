@@ -564,7 +564,12 @@ def main(args):
     # dev_loader = [first_batch]
 
     if optimiser is not None:
-        scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+        if args.scheduler_type == 'step':
+            scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+        elif args.scheduler_type == 'multistep':
+            if not isinstance(args.lr_multi_step_size, list):
+                args.lr_multi_step_size = [args.lr_multi_step_size]
+            scheduler = torch.optim.lr_scheduler.MultiStepLR(optimiser, args.lr_multi_step_size, args.lr_gamma)
     else:
         scheduler = None
 
@@ -704,8 +709,12 @@ def create_arg_parser():
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--lr-step-size', type=int, default=40,
                         help='Period of learning rate decay')
+    parser.add_argument('--lr-multi-step-size', nargs='+', type=int, default=40,
+                        help='Period of learning rate decay')
     parser.add_argument('--lr-gamma', type=float, default=0.1,
                         help='Multiplicative factor of learning rate decay')
+    parser.add_argument('--scheduler-type', type=str, choices=['step', 'multistep'], default='step',
+                        help='Number of training epochs')
     parser.add_argument('--weight-decay', type=float, default=0,
                         help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
                         'are not updated every step (since we select certain targets only); FIX THIS.')
