@@ -53,16 +53,16 @@ class MaskConvModel(nn.Module):
         if self.sens:  # Using sensitivity
             sens_maps = channels[:, 1:3, :, :]
             sens_per_row = torch.mean(sens_maps, dim=(-2))
-            if self.in_chans == 2:  # Also use mask
-                enc = self.mask_encoding(sens_per_row).squeeze(1)
-            elif self.in_chans == 3:
-                enc = self.mask_encoding(torch.cat((mask.unsqueeze(1), sens_per_row), dim=1)).squeeze(1)
+            if self.in_chans == 2:
+                enc = self.mask_encoding(sens_per_row)
+            elif self.in_chans == 3:  # Also use mask
+                enc = self.mask_encoding(torch.cat((mask.unsqueeze(1), sens_per_row), dim=1))
             else:
                 raise ValueError("Cannot use sensitivity with 'in_chans' at {}".format(self.in_chans))
         else:  # Not using sensitivity: only mask
-            enc = self.mask_encoding(mask.unsqueeze(1)).squeeze(1)
+            enc = self.mask_encoding(mask.unsqueeze(1))
         assert enc.shape[-1] == self.resolution
-        return enc
+        return enc.squeeze(1)
 
 
 def build_impro_maskconv_model(args):
