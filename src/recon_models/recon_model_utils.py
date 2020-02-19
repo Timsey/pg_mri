@@ -5,47 +5,56 @@ from src.helpers import transforms
 from src.recon_models.unet_kengal_model import build_kengal_model
 
 
+def compute_sensitivity(args, recon_output, loc, logscale):
+    assert recon_output.size(1) == 2, "Calculating sensitivity map assumes reconstruction model outputs 2 channels."
+    model_name = args.recon_model_name
+    # Calculate sensitivity map
+    # Set up distribution
+    if model_name == 'kengal_gauss':
+        dist = Normal(loc, logscale)
+        # Draw reconstruction samples
+        # samples x batch x 1 x res x res
+        samples = dist.sample((args.num_sens_samples,))
+        # Calculate sensitivity as Fourier{(sample - loc) / scale}
+        # samples x batch x 1 x res x res x 2
+        sens = (samples - loc) / torch.exp(logscale)
+        sens = transforms.rfft2(sens)
+    elif model_name == 'kengal_laplace':
+        dist = Laplace(loc, logscale)
+        # Draw reconstruction samples
+        # samples x batch x 1 x res x res
+        samples = dist.sample((args.num_sens_samples,))
+        # Calculate sensitivity as Fourier{(sample - loc) / scale}
+        # samples x batch x 1 x res x res x 2
+        sens = torch.where(samples > loc,
+                           samples / torch.exp(logscale),
+                           -1 * samples / torch.exp(logscale))
+        sens = transforms.rfft2(sens)
+    else:
+        return ValueError("Calculating sensitivity for model of type {} is not supported.".format(model_name))
+    # samples x batch x 1 x res x res x 2
+    return sens
+
+
 def create_impro_model_input(args, recon_model, zf, mask):
     assert len(mask.shape) == 5
     # mask shape: batch x 1 x columns x rows x 2
     recon_output = recon_model_forward_pass(args, recon_model, zf)
     if args.use_sensitivity:
-        assert recon_output.size(1) == 2, "Calculating sensitivity map assumes reconstruction model outputs 2 channels."
-        model_name = args.recon_model_name
-        # Calculate sensitivity map
-        # Set up distribution
         loc = recon_output[:, 0:1, :, :]
         logscale = recon_output[:, 1:2, :, :]
-        if model_name == 'kengal_gauss':
-            dist = Normal(loc, logscale)
-            # Draw reconstruction samples
-            # samples x batch x 1 x res x res
-            samples = dist.sample((args.num_sens_samples,))
-            # Calculate sensitivity as Fourier{(sample - loc) / scale}
-            # samples x batch x 1 x res x res x 2
-            sens = (samples - loc) / torch.exp(logscale)
-            sens = transforms.rfft2(sens)
-        elif model_name == 'kengal_laplace':
-            dist = Laplace(loc, logscale)
-            # Draw reconstruction samples
-            # samples x batch x 1 x res x res
-            samples = dist.sample((args.num_sens_samples,))
-            # Calculate sensitivity as Fourier{(sample - loc) / scale}
-            # samples x batch x 1 x res x res x 2
-            sens = torch.where(samples > loc,
-                               samples / torch.exp(logscale),
-                               -1 * samples / torch.exp(logscale))
-            sens = transforms.rfft2(sens)
-        else:
-            return ValueError("Calculating sensitivity for model of type {} is not supported.".format(model_name))
+        # samples x batch x 1 x res x res x 2
+        sens = compute_sensitivity(args, recon_output, loc, logscale)
+
+        # Instance normalisation (over pixels)
+        sens = (sens - torch.mean(sens, dim=(-2, -3), keepdim=True)) / torch.std(sens, dim=(-2, -3), keepdim=True)
+        # import pickle
+        # f = open(args.run_dir / 'sensitivity.png', 'wb')
+        # pickle.dump(sens.to('cpu').numpy(), f)
 
         # Average over samples
         # batch x 1 x res x res x 2
         sens = torch.mean(sens, dim=0)
-        # Instance normalisation (over pixels)
-        sens = (sens - torch.mean(sens, dim=(-2, -3), keepdim=True)) / torch.std(sens, dim=(-2, -3), keepdim=True)
-        # f = open(args.run_dir / 'sensitivity.pkl', 'wb')
-        # pickle.dump(sens.to('cpu').numpy(), f)
         # Mask rows that have been sampled already
         sens = (mask == 0).float() * sens
         # Remove vestigial channel dimension

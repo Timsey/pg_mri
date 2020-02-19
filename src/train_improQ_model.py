@@ -570,6 +570,8 @@ def main(args):
             if not isinstance(args.lr_multi_step_size, list):
                 args.lr_multi_step_size = [args.lr_multi_step_size]
             scheduler = torch.optim.lr_scheduler.MultiStepLR(optimiser, args.lr_multi_step_size, args.lr_gamma)
+        else:
+            raise ValueError("{} is not a valid scheduler choice ('step', 'multistep')".format(args.scheduler_type))
     else:
         scheduler = None
 

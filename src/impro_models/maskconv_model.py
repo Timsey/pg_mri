@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 
 
@@ -27,13 +28,15 @@ class Conv1DBlock(nn.Module):
 
 
 class MaskConvModel(nn.Module):
-    def __init__(self, resolution, chans, depth):
+    def __init__(self, resolution, in_chans, chans, depth, sens):
         super().__init__()
 
         self.resolution = resolution
         self.depth = depth
+        self.sens = sens
+        self.in_chans = in_chans
 
-        layers = [Conv1DBlock(1, chans)]
+        layers = [Conv1DBlock(in_chans, chans)]
         for _ in range(depth):
             layers.append(Conv1DBlock(chans, chans * 2))
             chans = chans * 2
@@ -45,9 +48,19 @@ class MaskConvModel(nn.Module):
 
         self.mask_encoding = nn.Sequential(*layers)
 
-    def forward(self, image, mask):
+    def forward(self, channels, mask):
         # mask = (mask - 0.5) * 2  # -1,1 normalisation
-        enc = self.mask_encoding(mask.unsqueeze(1)).squeeze(1)
+        if self.sens:  # Using sensitivity
+            sens_maps = channels[:, 1:3, :, :]
+            sens_per_row = torch.mean(sens_maps, dim=(-2))
+            if self.in_chans == 2:  # Also use mask
+                enc = self.mask_encoding(sens_per_row).squeeze(1)
+            elif self.in_chans == 3:
+                enc = self.mask_encoding(torch.cat((mask.unsqueeze(1), sens_per_row), dim=1)).squeeze(1)
+            else:
+                raise ValueError("Cannot use sensitivity with 'in_chans' at {}".format(self.in_chans))
+        else:  # Not using sensitivity: only mask
+            enc = self.mask_encoding(mask.unsqueeze(1)).squeeze(1)
         assert enc.shape[-1] == self.resolution
         return enc
 
@@ -55,7 +68,9 @@ class MaskConvModel(nn.Module):
 def build_impro_maskconv_model(args):
     model = MaskConvModel(
         resolution=args.resolution,
+        in_chans=args.in_chans,
         chans=args.num_chans,
-        depth=args.maskconv_depth
+        depth=args.maskconv_depth,
+        sens=args.use_sensitivity
     ).to(args.device)
     return model

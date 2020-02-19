@@ -23,7 +23,6 @@ def impro_model_forward_pass(args, impro_model, channels, mask):
         # Channels not actually used
         output = impro_model(channels, mask)
     elif model_name == 'maskconv':
-        # Channels not actually used
         output = impro_model(channels, mask)
     elif model_name == 'convpoolmaskconv':
         output = impro_model(channels, mask)
