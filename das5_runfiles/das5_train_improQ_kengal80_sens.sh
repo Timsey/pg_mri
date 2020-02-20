@@ -52,7 +52,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fas
 CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages python -m src.train_improQ_model \
 --dataset fastmri --data-path /var/scratch/tbbakker/data/fastMRI/singlecoil/ --exp-dir /var/scratch/tbbakker/mrimpro/results/ \
 --recon-model-checkpoint /var/scratch/tbbakker/fastMRI-shi/models/unet/al_gauss_res80_8to4in2_PD_cvol/model.pt --recon-model-name kengal_gauss \
---resolution 80 --num-chans 16 --batch-size 16 --impro-model-name maskconv --num-epochs 100 --acquisition CORPD_FBK \
---accelerations 8 --acquisition-steps 10 --report-interval 10 --num-target-rows 80 --lr 1e-4 --sample-rate 0.04 \
+--resolution 80 --num-chans 16 --batch-size 16 --impro-model-name multimaskconv --num-epochs 100 --acquisition CORPD_FBK \
+--accelerations 8 --acquisition-steps 10 --report-interval 10 --num-target-rows 80 --lr 1e-3 --sample-rate 0.04 \
 --seed 42 --eps-decay-rate 1 --num-workers 8 --in-chans 1 --lr-gamma 10 --center-volume --wandb --start-eps 0 \
 --scheduler-type multistep --lr-multi-step-size 40

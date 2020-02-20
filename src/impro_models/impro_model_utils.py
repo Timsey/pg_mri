@@ -91,7 +91,7 @@ def build_impro_model(args):
         model = build_impro_maskfc_model(args)
     elif model_name == 'maskconv':
         model = build_impro_maskconv_model(args)
-    elif model_name == 'maskconv':
+    elif model_name == 'multimaskconv':
         model = build_impro_multimaskconv_model(args)
     elif model_name == 'convpoolmaskconv':
         model = build_impro_convpoolmaskconv_model(args)

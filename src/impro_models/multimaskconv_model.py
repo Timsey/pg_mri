@@ -26,7 +26,8 @@ class Conv1DBlock(nn.Module):
         return self.layers(input)
 
     def __repr__(self):
-        return f'ConvBlock(in_chans={self.in_chans}, out_chans={self.out_chans}'
+        return f'ConvBlock(in_chans={self.in_chans}, out_chans={self.out_chans}, ' \
+               f'kernel_size={self.kernel_size}, padding={self.padding})'
 
 
 class MultiMaskConvModel(nn.Module):
@@ -44,7 +45,7 @@ class MultiMaskConvModel(nn.Module):
 
         layers_list = []
         for i, (kernel_size, padding) in enumerate(zip(self.kernel_sizes, self.padding)):
-            assert self.kernel_size % 2 == 1, "Kernel size must be an odd number"
+            assert kernel_size % 2 == 1, "Kernel size must be an odd number"
             chans = self.chans
             layers = [Conv1DBlock(in_chans, chans, kernel_size=kernel_size, padding=padding)]
             for _ in range(depth):
@@ -57,7 +58,7 @@ class MultiMaskConvModel(nn.Module):
             layers_list.append(layers)
 
         # No ReLU for the last layer
-        self.mask_encodings = [nn.Sequential(*layers) for layers in layers_list]
+        self.mask_encodings = nn.ModuleList([nn.Sequential(*layers) for layers in layers_list])
         self.out = nn.Sequential(
             Conv1DBlock(self.chans * len(layers_list), self.chans, kernel_size=1, padding=0),
             nn.Conv1d(self.chans, 1, kernel_size=1, padding=0)
@@ -69,15 +70,24 @@ class MultiMaskConvModel(nn.Module):
             sens_maps = channels[:, 1:3, :, :]
             sens_per_row = torch.mean(sens_maps, dim=(-2))
             if self.in_chans == 2:
-                enc = self.mask_encoding(sens_per_row)
+                encs = sens_per_row
             elif self.in_chans == 3:  # Also use mask
-                enc = self.mask_encoding(torch.cat((mask.unsqueeze(1), sens_per_row), dim=1))
+                encs = torch.cat((mask.unsqueeze(1), sens_per_row), dim=1)
             else:
                 raise ValueError("Cannot use sensitivity with 'in_chans' at {}".format(self.in_chans))
         else:  # Not using sensitivity: only mask
-            enc = self.mask_encoding(mask.unsqueeze(1))
+            encs = mask.unsqueeze(1)
+
+        enc = [encoding(encs) for encoding in self.mask_encodings]
+        enc = self.out(torch.cat(enc, dim=1))
         assert enc.shape[-1] == self.resolution
         return enc.squeeze(1)
+
+    def __repr__(self):
+        rep = ''
+        for enc in self.mask_encodings:
+            rep += str(enc)
+        return f'MultiMaskModel({rep}, {self.out})'
 
 
 def build_impro_multimaskconv_model(args):

@@ -182,7 +182,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
         at = time.perf_counter()
 
-        # optimiser.zero_grad()
+        if optimiser is not None:
+            optimiser.zero_grad()
         for step in range(args.acquisition_steps):
             target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
                                                  recon_model, impro_input, eps=eps, k=k)
@@ -199,9 +200,9 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 # loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
                 loss = loss.sum(dim=1).mean() / loss_mask[0].sum()  # there are loss_mask[0].sum() targets per slice
 
-                optimiser.zero_grad()
+                # optimiser.zero_grad()
                 loss.backward()
-                optimiser.step()
+                # optimiser.step()
 
                 epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
                 report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
@@ -212,7 +213,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                           recon_model)
 
-        # optimiser.step()
+        if optimiser is not None:
+            optimiser.step()
         if target is not None:
             if args.verbose >= 3:
                 logging.info('Time to train single batch of size {} for {} steps: {:.3f}'.format(
