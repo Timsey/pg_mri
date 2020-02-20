@@ -67,8 +67,6 @@ def create_impro_model_input(args, recon_model, zf, mask):
         # TODO: Use average of samples as recon (channel 1) here instead?
         recon_output = torch.cat((loc, sens), dim=1)
 
-    assert recon_output.size(1) == args.in_chans, ("Number of improvement model channels ({}) does not match number of "
-                                                   "input channels ({})".format(recon_output.size(1), args.in_chans))
     return recon_output
 
 

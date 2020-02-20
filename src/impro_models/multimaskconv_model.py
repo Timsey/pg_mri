@@ -29,7 +29,7 @@ class Conv1DBlock(nn.Module):
         return f'ConvBlock(in_chans={self.in_chans}, out_chans={self.out_chans}'
 
 
-class MaskConvModel(nn.Module):
+class MultiMaskConvModel(nn.Module):
     def __init__(self, resolution, in_chans, chans, depth, sens):
         super().__init__()
 
@@ -37,21 +37,31 @@ class MaskConvModel(nn.Module):
         self.depth = depth
         self.sens = sens
         self.in_chans = in_chans
-        self.kernel_sizes = 3
-        assert self.kernel_size % 2 == 1, "Kernel size must be an odd number"
-        self.padding = self.kernel_size // 2
+        self.chans = chans
 
-        layers = [Conv1DBlock(in_chans, chans, kernel_size=self.kernel_size, padding=self.padding)]
-        for _ in range(depth):
-            layers.append(Conv1DBlock(chans, chans * 2, kernel_size=self.kernel_size, padding=self.padding))
-            chans = chans * 2
-        for _ in range(depth):
-            layers.append(Conv1DBlock(chans, chans // 2, kernel_size=self.kernel_size, padding=self.padding))
-            chans = chans // 2
+        self.kernel_sizes = [1, 3, 5]
+        self.padding = [kernel_size // 2 for kernel_size in self.kernel_sizes]
+
+        layers_list = []
+        for i, (kernel_size, padding) in enumerate(zip(self.kernel_sizes, self.padding)):
+            assert self.kernel_size % 2 == 1, "Kernel size must be an odd number"
+            chans = self.chans
+            layers = [Conv1DBlock(in_chans, chans, kernel_size=kernel_size, padding=padding)]
+            for _ in range(depth):
+                layers.append(Conv1DBlock(chans, chans * 2, kernel_size=kernel_size, padding=padding))
+                chans = chans * 2
+            for _ in range(depth):
+                layers.append(Conv1DBlock(chans, chans // 2, kernel_size=kernel_size, padding=padding))
+                chans = chans // 2
+
+            layers_list.append(layers)
+
         # No ReLU for the last layer
-        layers.append(nn.Conv1d(chans, 1, kernel_size=self.kernel_size, padding=self.padding))
-
-        self.mask_encoding = nn.Sequential(*layers)
+        self.mask_encodings = [nn.Sequential(*layers) for layers in layers_list]
+        self.out = nn.Sequential(
+            Conv1DBlock(self.chans * len(layers_list), self.chans, kernel_size=1, padding=0),
+            nn.Conv1d(self.chans, 1, kernel_size=1, padding=0)
+        )
 
     def forward(self, channels, mask):
         # mask = (mask - 0.5) * 2  # -1,1 normalisation
@@ -70,8 +80,8 @@ class MaskConvModel(nn.Module):
         return enc.squeeze(1)
 
 
-def build_impro_maskconv_model(args):
-    model = MaskConvModel(
+def build_impro_multimaskconv_model(args):
+    model = MultiMaskConvModel(
         resolution=args.resolution,
         in_chans=args.in_chans,
         chans=args.num_chans,

@@ -134,7 +134,7 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     gt = gt.expand(-1, tk, -1, -1)
     # scores = batch x tk (channels), base_score = batch x 1
     scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
-    impros = scores - base_score
+    impros = (scores - base_score) * 100  # TODO: is this 'normalisation'?
     # target = batch x rows, batch_train_rows and impros = batch x tk
     target = output.clone().detach()  # clone is necessary, otherwise changing target also changes output: 0 loss always
     for j, train_rows in enumerate(batch_train_rows):
@@ -195,16 +195,16 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 # Compute loss and backpropagate
                 #  TODO: Maybe use replay buffer type strategy here? Requires too much memory
                 #   (need to save all gradients)?
-                # loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
-                loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
-                loss = loss.mean()
+                loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
+                # loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
+                loss = loss.sum(dim=1).mean() / loss_mask[0].sum()  # there are loss_mask[0].sum() targets per slice
 
                 optimiser.zero_grad()
                 loss.backward()
                 optimiser.step()
 
-                epoch_loss[step] += loss.item() / len(train_loader)
-                report_loss[step] += loss.item() / args.report_interval
+                epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
+                report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
                 writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
             # Acquire row for next step: GREEDY
@@ -218,18 +218,23 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 logging.info('Time to train single batch of size {} for {} steps: {:.3f}'.format(
                     args.batch_size, args.acquisition_steps, time.perf_counter() - at))
 
+            # if it % args.report_interval == 0:
+            #     if it == 0:
+            #         loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e6)
+            #                               for i, l in enumerate(report_loss)])
+            #     else:
+            #         loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e6) for i, l in enumerate(report_loss)])
             if it % args.report_interval == 0:
                 if it == 0:
-                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e6)
+                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l)
                                           for i, l in enumerate(report_loss)])
                 else:
-                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e6) for i, l in enumerate(report_loss)])
-
+                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l) for i, l in enumerate(report_loss)])
                 logging.info(
                     f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
                     f'Iter = [{it:4d}/{len(train_loader):4d}], '
                     f'Time = {time.perf_counter() - start_iter:.2f}s, '
-                    f'Avg Loss per step (x1e6) = [{loss_str}] ',
+                    f'Avg Loss per step = [{loss_str}] ',
                 )
 
                 report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -675,7 +680,8 @@ def create_arg_parser():
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
 
     parser.add_argument('--impro-model-name', choices=['convpool', 'convpoolmask', 'convbottle', 'maskfc', 'maskconv',
-                                                       'convpoolmaskconv', 'location', 'center', 'random'],
+                                                       'convpoolmaskconv', 'location', 'center', 'random',
+                                                       'multimaskconv'],
                         required=True, help='Improvement model name (if using resume, must correspond to model at the '
                         'improvement model checkpoint.')
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
@@ -723,7 +729,7 @@ def create_arg_parser():
                         help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
                         'are not updated every step (since we select certain targets only); FIX THIS.')
 
-    parser.add_argument('--start-eps', type=float, default=1.0, help='Epsilon to start with. This determines '
+    parser.add_argument('--start-eps', type=float, default=0.5, help='Epsilon to start with. This determines '
                         'the trade-off between training on rows the improvement networks suggests, and training on '
                         'randomly sampled rows. Note that rows are selected mostly randomly at the start of training '
                         'regardless, since the initialised model will not have learned anything useful yet.')

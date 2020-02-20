@@ -8,6 +8,7 @@ from .mask_model import build_impro_maskfc_model
 from .maskconv_model import build_impro_maskconv_model
 from .convpoolmaskconv_model import build_impro_convpoolmaskconv_model
 from .location_model import build_impro_location_model
+from .multimaskconv_model import build_impro_multimaskconv_model
 
 
 def impro_model_forward_pass(args, impro_model, channels, mask):
@@ -23,6 +24,8 @@ def impro_model_forward_pass(args, impro_model, channels, mask):
         # Channels not actually used
         output = impro_model(channels, mask)
     elif model_name == 'maskconv':
+        output = impro_model(channels, mask)
+    elif model_name == 'multimaskconv':
         output = impro_model(channels, mask)
     elif model_name == 'convpoolmaskconv':
         output = impro_model(channels, mask)
@@ -88,6 +91,8 @@ def build_impro_model(args):
         model = build_impro_maskfc_model(args)
     elif model_name == 'maskconv':
         model = build_impro_maskconv_model(args)
+    elif model_name == 'maskconv':
+        model = build_impro_multimaskconv_model(args)
     elif model_name == 'convpoolmaskconv':
         model = build_impro_convpoolmaskconv_model(args)
     elif model_name == 'location':
