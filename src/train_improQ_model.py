@@ -591,6 +591,7 @@ def main(args):
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
+    eps = 0.
     for epoch in range(start_epoch, args.num_epochs):
         if scheduler is not None:
             scheduler.step(epoch)
@@ -599,7 +600,8 @@ def main(args):
         # Examples for eps_decay_rate = 5:
         # E.g. if num_epochs = 10, we decay a factor e after 2 epochs: 1/5th of all epochs
         # E.g. if num_epochs = 50, we decay a factor e after 10 epochs: 1/5th of all epochs
-        eps = np.exp(np.log(args.start_eps) - args.eps_decay_rate * epoch / args.num_epochs)
+        if args.start_eps != 0.:
+            eps = np.exp(np.log(args.start_eps) - args.eps_decay_rate * epoch / args.num_epochs)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k)
         # TODO: do both of these? Make more efficient?
         dev_ssims, f_dev_ssims, _, _, dev_ssim_time = evaluate_recons(
@@ -721,7 +723,7 @@ def create_arg_parser():
                         help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
                         'are not updated every step (since we select certain targets only); FIX THIS.')
 
-    parser.add_argument('--start-eps', type=float, default=0.5, help='Epsilon to start with. This determines '
+    parser.add_argument('--start-eps', type=float, default=1.0, help='Epsilon to start with. This determines '
                         'the trade-off between training on rows the improvement networks suggests, and training on '
                         'randomly sampled rows. Note that rows are selected mostly randomly at the start of training '
                         'regardless, since the initialised model will not have learned anything useful yet.')
