@@ -37,7 +37,7 @@ class MaskConvModel(nn.Module):
         self.depth = depth
         self.sens = sens
         self.in_chans = in_chans
-        self.kernel_sizes = 3
+        self.kernel_size = 5
         assert self.kernel_size % 2 == 1, "Kernel size must be an odd number"
         self.padding = self.kernel_size // 2
 
