@@ -2,6 +2,7 @@
   <dictionary name="tbakker">
     <words>
       <w>accel</w>
+      <w>asym</w>
       <w>backpropagate</w>
       <w>batchnorm</w>
       <w>chans</w>
