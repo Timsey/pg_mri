@@ -36,6 +36,7 @@
       <w>logscale</w>
       <w>logvarenc</w>
       <w>maskconv</w>
+      <w>maskconvunit</w>
       <w>maskfc</w>
       <w>meanenc</w>
       <w>mrimpro</w>
@@ -65,6 +66,7 @@
       <w>unacq</w>
       <w>unacquired</w>
       <w>unet</w>
+      <w>unitmask</w>
       <w>unnormalisation</w>
       <w>unsqueeze</w>
       <w>untrainable</w>

@@ -25,6 +25,9 @@ def impro_model_forward_pass(args, impro_model, channels, mask):
         output = impro_model(channels, mask)
     elif model_name == 'maskconv':
         output = impro_model(channels, mask)
+    elif model_name == 'maskconvunit':
+        unitmask = torch.ones_like(mask)
+        output = impro_model(channels, unitmask)
     elif model_name == 'multimaskconv':
         output = impro_model(channels, mask)
     elif model_name == 'convpoolmaskconv':
@@ -89,7 +92,7 @@ def build_impro_model(args):
         model = build_impro_convbottle_model(args)
     elif model_name == 'maskfc':
         model = build_impro_maskfc_model(args)
-    elif model_name == 'maskconv':
+    elif model_name in ['maskconv', 'maskconvunit']:
         model = build_impro_maskconv_model(args)
     elif model_name == 'multimaskconv':
         model = build_impro_multimaskconv_model(args)

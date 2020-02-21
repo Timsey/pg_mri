@@ -298,9 +298,6 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
         model.eval()
 
     ssims = 0
-    f_ssims = 0
-    c_ssims = 0
-    r_ssims = 0
     # # strategy: acquisition step: filename: [recons]
     # recons = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     # targets = defaultdict(list)
@@ -330,23 +327,10 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
             if args.save_sens:
                 save_sensitivity(args, impro_input, epoch, 0, it)
 
-            c_masked_kspace = masked_kspace.clone()
-            c_mask = mask.clone()
-            f_masked_kspace = masked_kspace.clone()
-            f_mask = mask.clone()
-            r_masked_kspace = masked_kspace.clone()
-            r_mask = mask.clone()
             norm_recon = impro_input[:, 0:1, :, :] * std + mean
             init_ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
 
             batch_ssims = [init_ssim_val.item()]
-            f_batch_ssims = [init_ssim_val.item()]
-            c_batch_ssims = []
-            r_batch_ssims = []
-            if epoch == -1:
-                c_batch_ssims.append(init_ssim_val.item())
-                r_batch_ssims.append(init_ssim_val.item())
-
             # eval_rec = norm_recon.to('cpu')
             # for i in range(eval_rec.size(0)):
             #     recons[fname[i]]['center'][0].append(eval_rec[i].squeeze().numpy())
@@ -358,22 +342,17 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
                 epoch_outputs[step + 1].append(output.to('cpu').numpy())
                 # Greedy policy (size = batch)
-                # TODO: model often (at least initially) seems to want to choose rows that have already been chosen,
-                #  which means it will never choose a new row again for this acquisition trajectory.
-                _, next_rows = torch.max(output, dim=1)
-
-                # TODO: necessary? Seems so.
                 # Only acquire rows that have not been already acquired
                 _, topk_rows = torch.topk(output, args.resolution, dim=1)
-                f_unacquired = (f_mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
-                f_next_rows = []
+                unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
+                next_rows = []
                 for j, sl_topk_rows in enumerate(topk_rows):
                     for row in sl_topk_rows:
-                        if row in f_unacquired[j, :].nonzero().flatten():
-                            f_next_rows.append(row)
+                        if row in unacquired[j, :].nonzero().flatten():
+                            next_rows.append(row)
                             break
                 # TODO: moving to device should happen only once before both loops. Should just mutate object after
-                f_next_rows = torch.tensor(f_next_rows).long().to(args.device)
+                next_rows = torch.tensor(next_rows).long().to(args.device)
 
                 # Acquire this row
                 impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
@@ -387,60 +366,14 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
 
-                # Acquire this row
-                f_impro_input, f_zf, f_mean, f_std, f_mask, f_masked_kspace = acquire_row(
-                    kspace, f_masked_kspace, f_next_rows, f_mask, recon_model)
-                f_norm_recon = f_impro_input[:, 0:1, :, :] * f_std + f_mean
-                # shape = 1
-                f_ssim_val = ssim(f_norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
-                # eventually shape = al_steps
-                f_batch_ssims.append(f_ssim_val.item())
-
                 # eval_rec = norm_recon.to('cpu')
                 # for i in range(eval_rec.size(0)):
                 #     recons[fname[i]]['improv'][step + 1].append(eval_rec[i].squeeze().numpy())
 
-                # Acquire center row
-                if epoch == -1:
-                    c_flat_unacq = (c_mask[0].squeeze() == 0).nonzero().flatten()
-                    c_next_row = c_flat_unacq[len(c_flat_unacq) // 2]
-                    c_next_rows = torch.tensor([c_next_row] * c_mask.size(0)).long().to(args.device)
-                    c_impro_input, c_zf, c_mean, c_std, c_mask, c_masked_kspace = acquire_row(kspace, c_masked_kspace,
-                                                                                              c_next_rows, c_mask,
-                                                                                              recon_model)
-                    c_norm_recon = c_impro_input[:, 0:1, :, :] * c_std + c_mean
-                    # shape = 1
-                    c_ssim_val = ssim(c_norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
-                    # eventually shape = al_steps
-                    c_batch_ssims.append(c_ssim_val.item())
-
-                    # c_eval_rec = c_norm_recon.to('cpu')
-                    # for i in range(c_eval_rec.size(0)):
-                    #     recons[fname[i]]['center'][step + 1].append(c_eval_rec[i].squeeze().numpy())
-
-                    # Acquire random row
-                    r_next_rows_options = [(r_mask[i].squeeze() == 0).nonzero().flatten() for i in range(mask.size(0))]
-                    r_next_rows = torch.tensor([row_options[int(torch.rand(1) * len(row_options))]
-                                                for row_options in r_next_rows_options])
-                    r_impro_input, r_zf, r_mean, r_std, r_mask, r_masked_kspace = acquire_row(kspace, r_masked_kspace,
-                                                                                              r_next_rows, r_mask,
-                                                                                              recon_model)
-                    r_norm_recon = r_impro_input[:, 0:1, :, :] * r_std + r_mean
-                    # shape = 1
-                    r_ssim_val = ssim(r_norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
-                    # eventually shape = al_steps
-                    r_batch_ssims.append(r_ssim_val.item())
-
             # shape = al_steps
             ssims += np.array(batch_ssims)
-            f_ssims += np.array(f_batch_ssims)
-            c_ssims += np.array(c_batch_ssims)
-            r_ssims += np.array(r_batch_ssims)
 
     ssims /= tbs
-    f_ssims /= tbs
-    c_ssims /= tbs
-    r_ssims /= tbs
     # for fname, vol_gts in targets.items():
     #     for step in range(args.acquisition_steps + 1):
     #         if epoch == -1:
@@ -464,9 +397,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
     if args.wandb:
         wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
-        wandb.log({'val_f_ssims': {str(key): val for key, val in enumerate(f_ssims)}}, step=epoch + 1)
 
-    return ssims, f_ssims, c_ssims, r_ssims, time.perf_counter() - start
+    return ssims, time.perf_counter() - start
 
 
 def main(args):
@@ -554,16 +486,8 @@ def main(args):
     # Training and evaluation
     k = args.num_target_rows
 
-    dev_ssims, f_dev_ssims, c_dev_ssims, r_dev_ssims, dev_ssim_time = evaluate_recons(
-        args, -1, recon_model, model, dev_loader, writer)
-
+    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
     dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
-    f_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(f_dev_ssims)])
-    c_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(c_dev_ssims)])
-    r_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(r_dev_ssims)])
-    logging.info(f'C_DevSSIM = [{c_dev_ssims_str}]')
-    logging.info(f'R_DevSSIM = [{r_dev_ssims_str}]')
-    logging.info(f'F_DevSSIM = [{f_dev_ssims_str}]')
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
@@ -580,8 +504,7 @@ def main(args):
             eps = np.exp(np.log(args.start_eps) - args.eps_decay_rate * epoch / args.num_epochs)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k)
         # TODO: do both of these? Make more efficient?
-        dev_ssims, f_dev_ssims, _, _, dev_ssim_time = evaluate_recons(
-            args, epoch, recon_model, model, dev_loader, writer)
+        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
         # visualise(args, epoch, model, display_loader, writer)
 
         if args.do_dev_loss:
@@ -597,14 +520,12 @@ def main(args):
             dev_loss_time = 0
 
         dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
-        f_dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(f_dev_ssims)])
         logging.info(
             f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
             f'DevLoss = {dev_loss:.3g} TrainTime = {train_time:.2f}s '
             f'DevLossTime = {dev_loss_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
         )
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
-        logging.info(f'F_DevSSIM = [{f_dev_ssims_str}]')
         # save_model(args, args.run_dir, epoch, model, optimiser, None, False)
     writer.close()
 
@@ -652,7 +573,7 @@ def create_arg_parser():
 
     parser.add_argument('--impro-model-name', choices=['convpool', 'convpoolmask', 'convbottle', 'maskfc', 'maskconv',
                                                        'convpoolmaskconv', 'location', 'center', 'random',
-                                                       'multimaskconv'],
+                                                       'multimaskconv', 'maskconvunit'],
                         required=True, help='Improvement model name (if using resume, must correspond to model at the '
                         'improvement model checkpoint.')
     # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
