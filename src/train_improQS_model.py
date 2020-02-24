@@ -13,9 +13,10 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torchviz import make_dot
 from tensorboardX import SummaryWriter
+from torch.nn.modules.loss import CrossEntropyLoss
 
 from src.helpers.torch_metrics import ssim
-from src.helpers.losses import l1_loss_gradfixed, huber_loss
+from src.helpers.losses import l1_loss_gradfixed, huber_loss, NeuralSort
 from src.helpers.metrics import Metrics, METRIC_FUNCS
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters, plot_grad_flow,
@@ -41,8 +42,6 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
     # squeeze mask such that batch dimension doesn't vanish if it's 1.
     output, train = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
-    if not train:  # For center and random model: we don't need to train anything
-        return None, output
 
     recon = impro_input[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
     norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
@@ -114,10 +113,10 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     return target, output
 
 
-def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k):
+def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k, sorter):
     # TODO: try batchnorm in FC layers
-    if not isinstance(model, str):
-        model.train()
+    model.train()
+    cross_ent = CrossEntropyLoss(reduction='none')
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
     start_epoch = start_iter = time.perf_counter()
@@ -147,76 +146,83 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
         at = time.perf_counter()
 
-        if optimiser is not None:
-            optimiser.zero_grad()
+        optimiser.zero_grad()
         for step in range(args.acquisition_steps):
             target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
                                                  recon_model, impro_input, eps=eps, k=k)
+            loss_mask = (target != output).float()
+            epoch_targets[step + 1] += (target * loss_mask).to('cpu').numpy().sum(axis=0)
+            epoch_target_counts[step + 1] += loss_mask.to('cpu').numpy().sum(axis=0)
 
-            if target is not None:
-                loss_mask = (target != output).float()
-                epoch_targets[step + 1] += (target * loss_mask).to('cpu').numpy().sum(axis=0)
-                epoch_target_counts[step + 1] += loss_mask.to('cpu').numpy().sum(axis=0)
+            # Compute loss and backpropagate
+            #  TODO: Maybe use replay buffer type strategy here? Requires too much memory
+            #   (need to save all gradients)?
+            # Using ranking loss  # TODO: start caring more about best row as training proceeds?
+            # Mask out rows that don't have true computed targets
+            target = torch.where(loss_mask.byte(), target, -1e3 * torch.ones_like(target))
+            target = torch.argsort(target, dim=1, descending=True)[:, :k]
+            # Make sure that these rows are not used in loss: at initialisation the model regularly outputs negative
+            # values for rows (and also some true row values are slightly negative). If we set acquired row scores to
+            # 0, then the sorter will put these before the negative rows, leading to the output vector containing row
+            # indices of acquired rows. To prevent this, we set the values for acquired rows to strongly negative
+            # values.
+            # TODO: If sorting is slow, we can also just extract the k rows we computed targets for from output, sort
+            #  those, and then re-index them to their original index.
+            output = torch.where(loss_mask.byte(), output, -1e3 * torch.ones_like(output))
+            # batch x res x res (first res dim indexes the sorting, second indexes the rows)
+            # E.g. perm[0][i][j] gives the probabilities that the row in kspace at index j is the i'th best row.
+            perm = sorter(output)  # Differentiable sorter (softmax output)
+            perm = perm[:, :k, :]  # Only compare the k rows we computed targets for
+            # TODO: Implement efficient loss function that immediately works with softmax output
+            # sorter is already softmax output. If we want to use CELoss we need to transform them to logits first
+            perm = torch.log(perm + 1e-7)
+            # TODO: why is .contiguous() necessary: because of torch.where()
+            loss = cross_ent(perm.contiguous().view(output.size(0) * k, output.size(1)),
+                             target.contiguous().view(output.size(0) * k))
+            loss = loss.mean()  # Average CrossEntLoss per slice per row
 
-                # Compute loss and backpropagate
-                #  TODO: Maybe use replay buffer type strategy here? Requires too much memory
-                #   (need to save all gradients)?
-                loss = l1_loss_gradfixed(output, target, reduction='none') * loss_mask
-                # loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
-                loss = loss.sum(dim=1).mean() / loss_mask[0].sum()  # there are loss_mask[0].sum() targets per slice
+            # optimiser.zero_grad()
+            loss.backward()
+            # optimiser.step()
 
-                # optimiser.zero_grad()
-                loss.backward()
-                # optimiser.step()
-
-                epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
-                report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
-                writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
+            epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
+            report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
+            writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
             # Acquire row for next step: GREEDY
             _, next_rows = torch.max(output, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
             impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                           recon_model)
 
-        if optimiser is not None:
-            optimiser.step()
-        if target is not None:
-            if args.verbose >= 3:
-                logging.info('Time to train single batch of size {} for {} steps: {:.3f}'.format(
-                    args.batch_size, args.acquisition_steps, time.perf_counter() - at))
+        optimiser.step()
+        if args.verbose >= 3:
+            logging.info('Time to train single batch of size {} for {} steps: {:.3f}'.format(
+                args.batch_size, args.acquisition_steps, time.perf_counter() - at))
+        if it % args.report_interval == 0:
+            if it == 0:
+                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l)
+                                      for i, l in enumerate(report_loss)])
+            else:
+                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l) for i, l in enumerate(report_loss)])
+            logging.info(
+                f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
+                f'Iter = [{it:4d}/{len(train_loader):4d}], '
+                f'Time = {time.perf_counter() - start_iter:.2f}s, '
+                f'Avg Loss per step = [{loss_str}] ',
+            )
 
-            # if it % args.report_interval == 0:
-            #     if it == 0:
-            #         loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e6)
-            #                               for i, l in enumerate(report_loss)])
-            #     else:
-            #         loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e6) for i, l in enumerate(report_loss)])
-            if it % args.report_interval == 0:
-                if it == 0:
-                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l)
-                                          for i, l in enumerate(report_loss)])
-                else:
-                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l) for i, l in enumerate(report_loss)])
-                logging.info(
-                    f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
-                    f'Iter = [{it:4d}/{len(train_loader):4d}], '
-                    f'Time = {time.perf_counter() - start_iter:.2f}s, '
-                    f'Avg Loss per step = [{loss_str}] ',
-                )
-
-                report_loss = [0. for _ in range(args.acquisition_steps)]
+            report_loss = [0. for _ in range(args.acquisition_steps)]
 
         start_iter = time.perf_counter()
 
-    if target is not None:
-        for step in range(args.acquisition_steps):
-            targets[epoch][step + 1] = epoch_targets[step + 1].tolist()
-            target_counts[epoch][step + 1] = epoch_target_counts[step + 1].tolist()
-        save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
-        save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
+    for step in range(args.acquisition_steps):
+        targets[epoch][step + 1] = epoch_targets[step + 1].tolist()
+        target_counts[epoch][step + 1] = epoch_target_counts[step + 1].tolist()
+    save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
+    save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
 
-        if args.wandb:
-            wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+    if args.wandb:
+        wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
 
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
@@ -235,12 +241,12 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
     return impro_input, zf, mean, std, mask, masked_kspace
 
 
-def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
+def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter):
+    # TODO: sorter
     """
     Evaluates using loss function: i.e. how close are the predicted improvements to the actual improvements.
     """
-    if not isinstance(model, str):
-        model.eval()
+    model.eval()
     eps = 0  # Only evaluate for acquisitions the model actually wants to do
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     start = time.perf_counter()
@@ -268,21 +274,19 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                 target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
                                                      recon_model, impro_input, eps, k)
 
-                if target is not None:
-                    # Improvement model output
-                    # loss = l1_loss_gradfixed(output, target, reduction='mean')
-                    loss = huber_loss(output, target, reduction='mean')  # TODO: Think about loss function
-                    epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
+                # Improvement model output
+                # loss = l1_loss_gradfixed(output, target, reduction='mean')
+                loss = huber_loss(output, target, reduction='mean')  # TODO: Think about loss function
+                epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
 
                 # Greedy policy (size = batch)  # TODO: is this a good idea?
                 _, next_rows = torch.max(output, dim=1)
                 impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                               recon_model)
-        if target is not None:
-            if args.wandb:
-                wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
-            for step, loss in enumerate(epoch_loss):
-                writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
+        if args.wandb:
+            wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+        for step, loss in enumerate(epoch_loss):
+            writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
     return np.mean(epoch_loss), time.perf_counter() - start
 
 
@@ -290,8 +294,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     """
     Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
     """
-    if not isinstance(model, str):
-        model.eval()
+    model.eval()
 
     ssims = 0
     # # strategy: acquisition step: filename: [recons]
@@ -400,7 +403,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
 def main(args):
     args.trainQ = True
-    args.QM = True
+    args.QS = True
     # Reconstruction model
     recon_args, recon_model = load_recon_model(args)
     check_args_consistency(args, recon_args)
@@ -469,20 +472,18 @@ def main(args):
     # train_loader = [first_batch] * 10
     # dev_loader = [first_batch]
 
-    if optimiser is not None:
-        if args.scheduler_type == 'step':
-            scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
-        elif args.scheduler_type == 'multistep':
-            if not isinstance(args.lr_multi_step_size, list):
-                args.lr_multi_step_size = [args.lr_multi_step_size]
-            scheduler = torch.optim.lr_scheduler.MultiStepLR(optimiser, args.lr_multi_step_size, args.lr_gamma)
-        else:
-            raise ValueError("{} is not a valid scheduler choice ('step', 'multistep')".format(args.scheduler_type))
+    if args.scheduler_type == 'step':
+        scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    elif args.scheduler_type == 'multistep':
+        if not isinstance(args.lr_multi_step_size, list):
+            args.lr_multi_step_size = [args.lr_multi_step_size]
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimiser, args.lr_multi_step_size, args.lr_gamma)
     else:
-        scheduler = None
+        raise ValueError("{} is not a valid scheduler choice ('step', 'multistep')".format(args.scheduler_type))
 
     # Training and evaluation
     k = args.num_target_rows
+    sorter = NeuralSort(tau=args.tau, hard=False)
 
     dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
     dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
@@ -491,22 +492,22 @@ def main(args):
 
     eps = 0.
     for epoch in range(start_epoch, args.num_epochs):
-        if scheduler is not None:
-            scheduler.step(epoch)
+        scheduler.step(epoch)
         # eps decays a factor e after num_epochs / eps_decay_rate epochs: i.e. after 1/eps_decay_rate of all epochs
         # This way, the same factor decay happens after the same fraction of epochs, for various values for num_epochs
         # Examples for eps_decay_rate = 5:
         # E.g. if num_epochs = 10, we decay a factor e after 2 epochs: 1/5th of all epochs
         # E.g. if num_epochs = 50, we decay a factor e after 10 epochs: 1/5th of all epochs
-        if args.start_eps != 0.:
+        if args.start_eps != 0.:  # If start_eps = 0 we don't use eps
             eps = np.exp(np.log(args.start_eps) - args.eps_decay_rate * epoch / args.num_epochs)
-        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k)
+        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser,
+                                             writer, eps, k, sorter)
         # TODO: do both of these? Make more efficient?
         dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
         # visualise(args, epoch, model, display_loader, writer)
 
         if args.do_dev_loss:
-            dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
+            dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter)
             if not isinstance(model, str):
                 is_new_best = dev_loss < best_dev_loss
                 best_dev_loss = min(best_dev_loss, dev_loss)
@@ -603,6 +604,7 @@ def create_arg_parser():
     parser.add_argument('--maskconv-depth', default=3, type=int, help='One-way layer depth of maskconv modules.')
     parser.add_argument('--arch', default='comb_mask', choices=['loc_mask', 'comb_nomask', 'comb_mask'],
                         help='Type of architecture to use in convpoolmaskconv models.')
+    parser.add_argument('--tau', default=0.1, type=float, help='Temperature of relaxed sorting operator.')
 
     parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')

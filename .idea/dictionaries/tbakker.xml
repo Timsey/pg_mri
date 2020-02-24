@@ -33,6 +33,7 @@
       <w>krow</w>
       <w>kspace</w>
       <w>kspaces</w>
+      <w>logits</w>
       <w>logscale</w>
       <w>logvarenc</w>
       <w>maskconv</w>
@@ -58,6 +59,7 @@
       <w>savestr</w>
       <w>singlecoil</w>
       <w>slic</w>
+      <w>softmax</w>
       <w>ssim</w>
       <w>ssims</w>
       <w>subsampling</w>
