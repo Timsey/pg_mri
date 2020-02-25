@@ -395,7 +395,7 @@ def create_arg_parser():
     parser.add_argument('--dataset', default='fastmri', help='Dataset type to use.')
     parser.add_argument('--challenge', type=str, default='singlecoil',
                         help='Which challenge for fastMRI training.')
-    parser.add_argument('--data-path', type=pathlib.Path, default='/home/timsey/HDD/data/fastMRI/singlecoil/',
+    parser.add_argument('--data-path', type=pathlib.Path, default='/var/scratch/tbbakker/data/fastMRI/singlecoil/',
                         help='Path to the dataset. Required for fastMRI training.')
     parser.add_argument('--sample-rate', type=float, default=0.04,
                         help='Fraction of total volumes to include')
@@ -403,7 +403,7 @@ def create_arg_parser():
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path,
-                        default='/home/timsey/Projects/fastMRI-shi/models/unet/al_gauss_res80_8to4in2_PD_cvol/model.pt',
+                        default='/var/scratch/tbbakker/fastMRI-shi/models/unet/al_gauss_res80_8to4in2_PD_cvol/model.pt',
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
     parser.add_argument('--recon-model-name', default='kengal_gauss',
@@ -417,7 +417,7 @@ def create_arg_parser():
     parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Which device to train on. Set to "cuda" to use the GPU')
-    parser.add_argument('--exp-dir', type=pathlib.Path, default='/home/timsey/Projects/mrimpro/results/',
+    parser.add_argument('--exp-dir', type=pathlib.Path, default='/var/scratch/tbbakker/mrimpro/sweep_results/',
                         help='Directory where model and results should be saved. Will create a timestamped folder '
                         'in provided directory each run')
     parser.add_argument('--accelerations', nargs='+', default=[8], type=int,
