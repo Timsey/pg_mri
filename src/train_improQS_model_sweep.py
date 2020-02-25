@@ -1,3 +1,14 @@
+"""
+Script for running sweeps on DAS5.
+
+Run as follows in mrimpro base dir:
+
+> CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages wandb sweep src/QS_sweep.yaml
+> CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages wandb agent timsey/mrimpro/SWEEP_ID
+
+"""
+
+
 import logging
 import time
 import datetime
