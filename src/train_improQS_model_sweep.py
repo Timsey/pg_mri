@@ -534,51 +534,37 @@ def main(args):
 def create_arg_parser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
-    parser.add_argument('--resolution', default=320, type=int, help='Resolution of images')
-    parser.add_argument('--dataset', choices=['fastmri', 'cifar10'], required=True,
-                        help='Dataset to use.')
-    parser.add_argument('--wandb',  action='store_true',
-                        help='Whether to use wandb logging for this run.')
-
-    # Data parameters
+    parser.add_argument('--resolution', default=80, type=int, help='Resolution of images')
+    parser.add_argument('--dataset', default='fastmri', help='Dataset type to use.')
     parser.add_argument('--challenge', type=str, default='singlecoil',
                         help='Which challenge for fastMRI training.')
-    parser.add_argument('--data-path', type=pathlib.Path, default=None,
+    parser.add_argument('--data-path', type=pathlib.Path, default='/home/timsey/HDD/data/fastMRI/singlecoil/',
                         help='Path to the dataset. Required for fastMRI training.')
-    parser.add_argument('--sample-rate', type=float, default=1.,
+    parser.add_argument('--sample-rate', type=float, default=0.04,
                         help='Fraction of total volumes to include')
     parser.add_argument('--acquisition', type=str, default='CORPD_FBK',
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
-
-    # Reconstruction model
-    parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, default=None,
+    parser.add_argument('--recon-model-checkpoint', type=pathlib.Path,
+                        default='/home/timsey/Projects/fastMRI-shi/models/unet/al_gauss_res80_8to4in2_PD_cvol/model.pt',
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
-    parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'kengal_gauss', 'zero_filled'], required=True,
+    parser.add_argument('--recon-model-name', default='kengal_gauss',
                         help='Reconstruction model name corresponding to model checkpoint.')
-    parser.add_argument('--use-sensitivity',  action='store_true',
-                        help='Whether to use reconstruction model sensitivity as input to the improvement model.')
     parser.add_argument('--num-sens-samples', type=int, default=10,
                         help='Number of reconstruction model samples to average the sensitivity map over.')
-    parser.add_argument('--save-sens', action='store_true',
-                        help='Whether to save some sensitivity maps at SSIM evaluation time.')
-
-    parser.add_argument('--center-volume', action='store_true',
-                        help='If set, only the center slices of a volume will be included in the dataset. This '
-                             'removes the most noisy images from the data.')
-    parser.add_argument('--use-recon-mask-params', action='store_true',
-                        help='Whether to use mask parameter settings (acceleration and center fraction) that the '
-                        'reconstruction model was trained on. This will overwrite any other mask settings.')
-
-    parser.add_argument('--impro-model-name', choices=['convpool', 'convpoolmask', 'convbottle', 'maskfc', 'maskconv',
-                                                       'convpoolmaskconv', 'location', 'center', 'random',
-                                                       'multimaskconv', 'maskconvunit'],
-                        required=True, help='Improvement model name (if using resume, must correspond to model at the '
+    parser.add_argument('--impro-model-name', default='convpool',
+                        help='Improvement model name (if using resume, must correspond to model at the '
                         'improvement model checkpoint.')
-    # Mask parameters, preferably they match the parameters the reconstruction model was trained on. Also see
-    # argument use-recon-mask-params above.
+    parser.add_argument('--num-target-rows', type=int, default=10, help='Number of rows to compute ground truth '
+                        'targets for every update step.')
+    parser.add_argument('--report-interval', type=int, default=10, help='Period of loss reporting')
+    parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Which device to train on. Set to "cuda" to use the GPU')
+    parser.add_argument('--exp-dir', type=pathlib.Path, default='/home/timsey/Projects/mrimpro/results/',
+                        help='Directory where model and results should be saved. Will create a timestamped folder '
+                        'in provided directory each run')
     parser.add_argument('--accelerations', nargs='+', default=[8], type=int,
                         help='Ratio of k-space columns to be sampled. If multiple values are '
                              'provided, then one of those is chosen uniformly at random for '
@@ -588,7 +574,6 @@ def create_arg_parser():
                              'of the sampled rows should be in the center, this should be set to 2. All combinations '
                              'of acceleration and reciprocals-in-center will be used during training (every epoch a '
                              'volume randomly gets assigned an acceleration and center fraction.')
-
     parser.add_argument('--acquisition-steps', default=10, type=int, help='Acquisition steps to train for per image.')
     parser.add_argument('--num-pools', type=int, default=4, help='Number of ConvNet pooling layers. Note that setting '
                         'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
@@ -597,32 +582,34 @@ def create_arg_parser():
                         "that should 4x4 pool instead of 2x2 pool. E.g. if 2, first 2 layers will 4x4 pool, rest will "
                         "2x2 pool. Only used for 'pool' models.")
     parser.add_argument('--drop-prob', type=float, default=0, help='Dropout probability')
-    parser.add_argument('--num-chans', type=int, default=32, help='Number of ConvNet channels')
+    parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
+    parser.add_argument('--weight-decay', type=float, default=0,
+                        help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
+                        'are not updated every step (since we select certain targets only); FIX THIS.')
+
+    # Bools
+    parser.add_argument('--use-sensitivity', type=str2bool, default=True,
+                        help='Whether to use reconstruction model sensitivity as input to the improvement model.')
+    parser.add_argument('--center-volume', type=str2bool, default=True,
+                        help='If set, only the center slices of a volume will be included in the dataset. This '
+                             'removes the most noisy images from the data.')
+    parser.add_argument('--data-parallel', type=str2bool, default=True,
+                        help='If set, use multiple GPUs using data parallelism')
+
+    # Sweep params
+    parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
+
+    parser.add_argument('--num-chans', type=int, default=16, help='Number of ConvNet channels')
     parser.add_argument('--in-chans', default=2, type=int, help='Number of image input channels'
                         'E.g. set to 2 if input is reconstruction and uncertainty map')
-    parser.add_argument('--out-chans', type=int, default=32, help='Number of ConvNet output channels: these are input '
-                        "for the FC layers that follow. Only used for 'bottle' models.")
     parser.add_argument('--fc-size', default=512, type=int, help='Size (width) of fully connected layer(s).')
-    parser.add_argument('--maskconv-depth', default=3, type=int, help='One-way layer depth of maskconv modules.')
-    parser.add_argument('--arch', default='comb_mask', choices=['loc_mask', 'comb_nomask', 'comb_mask'],
-                        help='Type of architecture to use in convpoolmaskconv models.')
-    parser.add_argument('--start-tau', default=0.1, type=float, help='Temperature of relaxed sorting operator.')
-    parser.add_argument('--tau-decay-rate', default=5, type=float, help='Decay rate of tau, similar to eps-decay-rate.')
 
-    parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--lr-step-size', type=int, default=40,
                         help='Period of learning rate decay')
-    parser.add_argument('--lr-multi-step-size', nargs='+', type=int, default=40,
-                        help='Period of learning rate decay')
     parser.add_argument('--lr-gamma', type=float, default=0.1,
                         help='Multiplicative factor of learning rate decay')
-    parser.add_argument('--scheduler-type', type=str, choices=['step', 'multistep'], default='step',
-                        help='Number of training epochs')
-    parser.add_argument('--weight-decay', type=float, default=0,
-                        help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
-                        'are not updated every step (since we select certain targets only); FIX THIS.')
 
     parser.add_argument('--start-eps', type=float, default=0.5, help='Epsilon to start with. This determines '
                         'the trade-off between training on rows the improvement networks suggests, and training on '
@@ -630,37 +617,21 @@ def create_arg_parser():
                         'regardless, since the initialised model will not have learned anything useful yet.')
     parser.add_argument('--eps-decay-rate', type=float, default=5, help='Epsilon decay rate. Epsilon decays a '
                         'factor e after a fraction 1/eps_decay_rate of all epochs have passed.')
-    parser.add_argument('--num-target-rows', type=int, default=10, help='Number of rows to compute ground truth '
-                        'targets for every update step.')
 
-    parser.add_argument('--report-interval', type=int, default=100, help='Period of loss reporting')
-    parser.add_argument('--data-parallel', action='store_true',
-                        help='If set, use multiple GPUs using data parallelism')
-    parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
-    parser.add_argument('--device', type=str, default='cuda',
-                        help='Which device to train on. Set to "cuda" to use the GPU')
-    parser.add_argument('--exp-dir', type=pathlib.Path, required=True,
-                        help='Directory where model and results should be saved. Will create a timestamped folder '
-                        'in provided directory each run')
-
-    parser.add_argument('--resume', action='store_true',
-                        help='If set, resume the training from a previous model checkpoint. '
-                             '"--checkpoint" should be set with this')
-    parser.add_argument('--checkpoint', type=str,
-                        help='Path to an existing checkpoint. Used along with "--resume"')
-
-    parser.add_argument('--do-dev-loss', action='store_true',
-                        help='Whether to compute dev loss during training (generally takes ~1/5th of train time.'
-                             'Not to be confused with SSIM evaluation, which is always done.')
-    parser.add_argument('--verbose', type=int, default=1,
-                        help='Set verbosity level. Lowest=0, highest=4."')
-
-    parser.add_argument('--resume-wandb', action='store_true',
-                        help='Whether to resume a previous run.')
-    parser.add_argument('--run-id', type=str, default=None,
-                        help='Weights and Biases run id to restore.')
-
+    parser.add_argument('--start-tau', default=0.1, type=float, help='Temperature of relaxed sorting operator.')
+    parser.add_argument('--tau-decay-rate', default=5, type=float, help='Decay rate of tau, similar to eps-decay-rate.')
     return parser
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
 if __name__ == '__main__':
@@ -676,12 +647,7 @@ if __name__ == '__main__':
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
 
-    if args.wandb:
-        if args.resume_wandb:
-            assert args.run_id is not None, "Must specify run id if resuming a WandB session."
-            wandb.init(project='mrimpro', id=args.run_id, resume=True)
-        else:
-            wandb.init(project='mrimpro', config=args)
+    wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False

@@ -5,6 +5,7 @@
       <w>asym</w>
       <w>backpropagate</w>
       <w>batchnorm</w>
+      <w>bools</w>
       <w>chans</w>
       <w>cifar</w>
       <w>conv</w>
