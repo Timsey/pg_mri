@@ -1,7 +1,7 @@
 program: src/train_improQS_model_sweep.py
 method: bayes
 metric:
-  name: val_ssims.10
+  name: val_ssims_10
   goal: maximize
 parameters:
   lr:
@@ -19,7 +19,7 @@ parameters:
   batch-size:
     values: [8, 16, 32]
   num-epochs:
-    values: [20, 30, 40, 50]
+    values: [1]
   lr-step-size:
     values: [20, 40]
   eps-decay-rate:

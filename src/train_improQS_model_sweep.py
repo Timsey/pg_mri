@@ -317,6 +317,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
         writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
 
     wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+    wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
 
     return ssims, time.perf_counter() - start
 
