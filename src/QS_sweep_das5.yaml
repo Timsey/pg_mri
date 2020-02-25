@@ -1,4 +1,4 @@
-program: CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages src/train_improQS_model_sweep.py
+program: src/train_improQS_model_sweep.py
 method: bayes
 metric:
   name: val_ssims.10
@@ -56,3 +56,5 @@ early_terminate:
   type: hyperband
   eta: 3
   min_iter: 3
+
+CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages
