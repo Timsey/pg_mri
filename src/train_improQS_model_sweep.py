@@ -32,7 +32,6 @@ logger = logging.getLogger(__name__)
 
 # torch.autograd.set_detect_anomaly(True)
 
-
 targets = defaultdict(lambda: defaultdict(lambda: 0))
 target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
@@ -142,10 +141,6 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # Base reconstruction model forward pass
         impro_input = create_impro_model_input(args, recon_model, zf, mask)
 
-        # TODO: number of steps should be dependent on acceleration!
-        #  But not all samples in batch have same acceleration: maybe change DataLoader at some point.
-        at = time.perf_counter()
-
         optimiser.zero_grad()
         for step in range(args.acquisition_steps):
             target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
@@ -195,9 +190,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                                                           recon_model)
 
         optimiser.step()
-        if args.verbose >= 3:
-            logging.info('Time to train single batch of size {} for {} steps: {:.3f}'.format(
-                args.batch_size, args.acquisition_steps, time.perf_counter() - at))
+
         if it % args.report_interval == 0:
             if it == 0:
                 loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l)
@@ -221,8 +214,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
     save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
 
-    if args.wandb:
-        wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+    wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
 
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
@@ -241,55 +233,6 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
     return impro_input, zf, mean, std, mask, masked_kspace
 
 
-def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter):
-    # TODO: sorter
-    """
-    Evaluates using loss function: i.e. how close are the predicted improvements to the actual improvements.
-    """
-    model.eval()
-    eps = 0  # Only evaluate for acquisitions the model actually wants to do
-    epoch_loss = [0. for _ in range(args.acquisition_steps)]
-    start = time.perf_counter()
-    with torch.no_grad():
-        for _, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, mean, std, _, _ = data
-            # TODO: Maybe normalisation unnecessary for SSIM target?
-            # shape after unsqueeze = batch x channel x columns x rows x complex
-            kspace = kspace.unsqueeze(1).to(args.device)
-            masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
-            mask = mask.unsqueeze(1).to(args.device)
-            # shape after unsqueeze = batch x channel x columns x rows
-            zf = zf.unsqueeze(1).to(args.device)
-            gt = gt.unsqueeze(1).to(args.device)
-            mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            gt = gt * std + mean
-
-            # Base reconstruction model forward pass
-            impro_input = create_impro_model_input(args, recon_model, zf, mask)
-
-            for step in range(args.acquisition_steps):
-                # Get impro model input and target:
-                # this step requires many forward passes through the reconstruction model
-                target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
-                                                     recon_model, impro_input, eps, k)
-
-                # Improvement model output
-                # loss = l1_loss_gradfixed(output, target, reduction='mean')
-                loss = huber_loss(output, target, reduction='mean')  # TODO: Think about loss function
-                epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
-
-                # Greedy policy (size = batch)  # TODO: is this a good idea?
-                _, next_rows = torch.max(output, dim=1)
-                impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                              recon_model)
-        if args.wandb:
-            wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
-        for step, loss in enumerate(epoch_loss):
-            writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
-    return np.mean(epoch_loss), time.perf_counter() - start
-
-
 def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     """
     Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
@@ -300,8 +243,6 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     # # strategy: acquisition step: filename: [recons]
     # recons = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     # targets = defaultdict(list)
-    # metrics = {step: Metrics(METRIC_FUNCS) for step in range(args.acquisition_steps + 1)}
-    # c_metrics = {step: Metrics(METRIC_FUNCS) for step in range(args.acquisition_steps + 1)}
 
     epoch_outputs = defaultdict(list)
     tbs = 0
@@ -323,18 +264,11 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
 
             # Base reconstruction model forward pass
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
-            if args.save_sens:
-                save_sensitivity(args, impro_input, epoch, 0, it)
 
             norm_recon = impro_input[:, 0:1, :, :] * std + mean
             init_ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
 
             batch_ssims = [init_ssim_val.item()]
-            # eval_rec = norm_recon.to('cpu')
-            # for i in range(eval_rec.size(0)):
-            #     recons[fname[i]]['center'][0].append(eval_rec[i].squeeze().numpy())
-            #     recons[fname[i]]['improv'][0].append(eval_rec[i].squeeze().numpy())
-            #     targets[fname[i]].append(gt.to('cpu')[i].squeeze().numpy())
 
             for step in range(args.acquisition_steps):
                 # Improvement model output
@@ -357,8 +291,6 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 # Acquire this row
                 impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                               recon_model)
-                if args.save_sens:
-                    save_sensitivity(args, impro_input, epoch, step + 1, it)
 
                 norm_recon = impro_input[:, 0:1, :, :] * std + mean
                 # shape = 1
@@ -366,28 +298,10 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
 
-                # eval_rec = norm_recon.to('cpu')
-                # for i in range(eval_rec.size(0)):
-                #     recons[fname[i]]['improv'][step + 1].append(eval_rec[i].squeeze().numpy())
-
             # shape = al_steps
             ssims += np.array(batch_ssims)
 
     ssims /= tbs
-    # for fname, vol_gts in targets.items():
-    #     for step in range(args.acquisition_steps + 1):
-    #         if epoch == -1:
-    #             c_metrics[step].push(np.stack(vol_gts), np.stack(recons[fname]['center'][step]))
-    #         metrics[step].push(np.stack(vol_gts), np.stack(recons[fname]['improv'][step]))
-    # print('\n')
-    # if epoch == -1:
-    #     for step in range(args.acquisition_steps + 1):
-    #         print('Center Metrics, step {}: {}'.format(step, c_metrics[step]))
-    # print('\n')
-    # for step in range(args.acquisition_steps + 1):
-    #     print('Improv Metrics, step {}: {}'.format(step, metrics[step]))
-    # print('\n')
-
     for step in range(args.acquisition_steps):
         outputs[epoch][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
     save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
@@ -395,8 +309,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     for step, val in enumerate(ssims):
         writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
 
-    if args.wandb:
-        wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+    wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
 
     return ssims, time.perf_counter() - start
 
@@ -409,36 +322,23 @@ def main(args):
     check_args_consistency(args, recon_args)
 
     # Improvement model to train
-    if args.resume:
-        checkpoint, model, optimiser = load_impro_model(args.checkpoint)
-        args = checkpoint['args']
-        best_dev_loss = checkpoint['best_dev_loss']
-        start_epoch = checkpoint['epoch']
-        del checkpoint
-    else:
-        model = build_impro_model(args)
-        # Add mask parameters for training
-        args = add_mask_params(args, recon_args)
-        if not isinstance(model, str):
-            if args.data_parallel:
-                model = torch.nn.DataParallel(model)
-            optimiser = build_optim(args, model.parameters())
-        else:
-            optimiser = None
-        best_dev_loss = 1e9
-        start_epoch = 0
-        # Create directory to store results in
-        savestr = 'res{}_al{}_accel{}_{}_{}_k{}_{}'.format(args.resolution, args.acquisition_steps, args.accelerations,
-                                                           args.impro_model_name, args.recon_model_name,
-                                                           args.num_target_rows,
-                                                           datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
-        args.run_dir = args.exp_dir / savestr
-        args.run_dir.mkdir(parents=True, exist_ok=False)
+    model = build_impro_model(args)
+    # Add mask parameters for training
+    args = add_mask_params(args, recon_args)
+    if args.data_parallel:
+        model = torch.nn.DataParallel(model)
+    optimiser = build_optim(args, model.parameters())
+    start_epoch = 0
+    # Create directory to store results in
+    savestr = 'res{}_al{}_accel{}_{}_{}_k{}_{}'.format(args.resolution, args.acquisition_steps, args.accelerations,
+                                                       args.impro_model_name, args.recon_model_name,
+                                                       args.num_target_rows,
+                                                       datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
+    args.run_dir = args.exp_dir / savestr
+    args.run_dir.mkdir(parents=True, exist_ok=False)
 
-    if args.wandb:
-        wandb.config.update(args)
-        if not isinstance(model, str):
-            wandb.watch(model, log='all')
+    wandb.config.update(args)
+    wandb.watch(model, log='all')
 
     # Logging
     logging.info(args)
@@ -452,34 +352,10 @@ def main(args):
     # Initialise summary writer
     writer = SummaryWriter(log_dir=args.run_dir / 'summary')
 
-    if not isinstance(model, str):
-        # Parameter counting
-        if args.verbose >= 1:
-            logging.info('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
-                count_parameters(recon_model), count_trainable_parameters(recon_model),
-                count_untrainable_parameters(recon_model)))
-            logging.info('Improvement model parameters: total {}, of which {} trainable and {} untrainable'.format(
-                count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
-        if args.verbose >= 3:
-            for p in model.parameters():
-                logging.info(p.shape, p.numel())
-
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
 
-    # TODO: remove this
-    # first_batch = next(iter(train_loader))
-    # train_loader = [first_batch] * 10
-    # dev_loader = [first_batch]
-
-    if args.scheduler_type == 'step':
-        scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
-    elif args.scheduler_type == 'multistep':
-        if not isinstance(args.lr_multi_step_size, list):
-            args.lr_multi_step_size = [args.lr_multi_step_size]
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimiser, args.lr_multi_step_size, args.lr_gamma)
-    else:
-        raise ValueError("{} is not a valid scheduler choice ('step', 'multistep')".format(args.scheduler_type))
+    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
 
     # Training and evaluation
     k = args.num_target_rows
@@ -504,27 +380,12 @@ def main(args):
 
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser,
                                              writer, eps, k, sorter)
-        # TODO: do both of these? Make more efficient?
         dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
-        # visualise(args, epoch, model, display_loader, writer)
-
-        if args.do_dev_loss:
-            dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter)
-            if not isinstance(model, str):
-                is_new_best = dev_loss < best_dev_loss
-                best_dev_loss = min(best_dev_loss, dev_loss)
-                save_model(args, args.run_dir, epoch, model, optimiser, best_dev_loss, is_new_best)
-                if args.wandb:
-                    wandb.save('model.h5')
-        else:
-            dev_loss = 0
-            dev_loss_time = 0
 
         dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
         logging.info(
             f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
-            f'DevLoss = {dev_loss:.3g} TrainTime = {train_time:.2f}s '
-            f'DevLossTime = {dev_loss_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
+            f' TrainTime = {train_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
         )
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
         save_model(args, args.run_dir, epoch, model, optimiser, None, False)
