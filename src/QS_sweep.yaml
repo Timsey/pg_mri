@@ -5,7 +5,7 @@ metric:
   goal: maximize
 parameters:
   lr:
-    values: [0.01, 0.005, 0.001, 0.0005, 0.0001]
+    values: [0.002, 0.001, 0.0005, 0.0001]
   fc-size:
     values: [128, 256, 512]
   in-chans:
@@ -19,9 +19,9 @@ parameters:
   batch-size:
     values: [8, 16, 32]
   num-epochs:
-    values: [20, 30, 50]
+    values: [20, 30, 40, 50]
   lr-step-size:
-    values: [10, 25]
+    values: [20, 40]
   eps-decay-rate:
     values: [1, 5, 10]
   start-tau:
