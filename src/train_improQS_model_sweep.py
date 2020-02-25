@@ -13,10 +13,9 @@ from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
 
 import sys
-print(sys.path)
 sys.path.insert(0, '/home/timsey/Projects/mrimpro/')  # noqa: F401
 sys.path.insert(0, '/Users/tbakker/Projects/mrimpro/')  # noqa: F401
-print(sys.path)
+sys.path.insert(0, '/var/scratch/tbbakker/mrimpro/')  # noqa: F401
 
 from src.helpers.torch_metrics import ssim
 from src.helpers.losses import NeuralSort
@@ -504,7 +503,7 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
-        
+
     args.use_recon_mask_params = False
 
     wandb.init(project='mrimpro', config=args)
