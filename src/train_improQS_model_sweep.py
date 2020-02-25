@@ -504,6 +504,8 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
+        
+    args.use_recon_mask_params = False
 
     wandb.init(project='mrimpro', config=args)
 
