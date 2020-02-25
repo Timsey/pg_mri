@@ -408,8 +408,6 @@ def create_arg_parser():
                         'set to zero_filled.')
     parser.add_argument('--recon-model-name', default='kengal_gauss',
                         help='Reconstruction model name corresponding to model checkpoint.')
-    parser.add_argument('--num-sens-samples', type=int, default=10,
-                        help='Number of reconstruction model samples to average the sensitivity map over.')
     parser.add_argument('--impro-model-name', default='convpool',
                         help='Improvement model name (if using resume, must correspond to model at the '
                         'improvement model checkpoint.')
@@ -445,7 +443,7 @@ def create_arg_parser():
                         'are not updated every step (since we select certain targets only); FIX THIS.')
 
     # Bools
-    parser.add_argument('--use-sensitivity', type=str2bool, default=True,
+    parser.add_argument('--use-sensitivity', type=str2bool, default=False,
                         help='Whether to use reconstruction model sensitivity as input to the improvement model.')
     parser.add_argument('--center-volume', type=str2bool, default=True,
                         help='If set, only the center slices of a volume will be included in the dataset. This '
