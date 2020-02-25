@@ -48,6 +48,7 @@
       <w>multistep</w>
       <w>nomask</w>
       <w>nongreedy</w>
+      <w>noqa</w>
       <w>outshoots</w>
       <w>preds</w>
       <w>pretrained</w>

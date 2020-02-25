@@ -9,28 +9,22 @@ from collections import defaultdict
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-from torch.autograd import Variable
-from torchviz import make_dot
 from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
 
+import sys
+sys.path.append('/home/timsey/src')  # noqa: F401
+
 from src.helpers.torch_metrics import ssim
-from src.helpers.losses import l1_loss_gradfixed, huber_loss, NeuralSort
-from src.helpers.metrics import Metrics, METRIC_FUNCS
-from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
-                               count_trainable_parameters, count_untrainable_parameters, plot_grad_flow,
-                               save_sensitivity)
+from src.helpers.losses import NeuralSort
+from src.helpers.utils import add_mask_params, save_json, check_args_consistency
 from src.helpers.data_loading import create_data_loaders
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
                                                 recon_model_forward_pass, create_impro_model_input, load_recon_model)
-from src.impro_models.impro_model_utils import (load_impro_model, build_impro_model, build_optim, save_model,
-                                                impro_model_forward_pass)
+from src.impro_models.impro_model_utils import build_impro_model, build_optim, save_model, impro_model_forward_pass
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# torch.autograd.set_detect_anomaly(True)
 
 targets = defaultdict(lambda: defaultdict(lambda: 0))
 target_counts = defaultdict(lambda: defaultdict(lambda: 0))
