@@ -13,7 +13,10 @@ from tensorboardX import SummaryWriter
 from torch.nn.modules.loss import CrossEntropyLoss
 
 import sys
-sys.path.append('/home/timsey/src')  # noqa: F401
+print(sys.path)
+sys.path.insert(0, '/home/timsey/Projects/mrimpro/')  # noqa: F401
+sys.path.insert(0, '/Users/tbakker/Projects/mrimpro/')  # noqa: F401
+print(sys.path)
 
 from src.helpers.torch_metrics import ssim
 from src.helpers.losses import NeuralSort
