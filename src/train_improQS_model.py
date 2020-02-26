@@ -398,7 +398,6 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     if args.wandb:
         wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
 
-
     return ssims, time.perf_counter() - start
 
 
