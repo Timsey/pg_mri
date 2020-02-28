@@ -21,7 +21,6 @@ from collections import defaultdict
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
-from torch.nn.modules.loss import CrossEntropyLoss
 
 import sys
 sys.path.insert(0, '/home/timsey/Projects/mrimpro/')  # noqa: F401
@@ -110,55 +109,78 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         optimiser.zero_grad()
         for step in range(args.acquisition_steps):
-            if it == 6 and step == 0:
-                a = 10
             # TODO: Output nans?
             output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
             loss_mask = (mask == 0).squeeze().float()
+
             # Mask acquired rows
             logits = torch.where(loss_mask.byte(), output, -1e7 * torch.ones_like(output))
             # Softmax over 'logits' representing row scores
             probs = torch.nn.functional.softmax(logits - torch.max(logits, dim=1, keepdim=True)[0], dim=1)
-            # TODO: this possibly samples non-allowed rows sometimes, which have prob ~ 0, and thus log prob -inf.
-            #  To fix this we'd need to restrict the categorical to only allowed rows, keeping track of the indices,
-            #  so that we correctly backpropagate the loss to the model.
+            # # TODO: this possibly samples non-allowed rows sometimes, which have prob ~ 0, and thus log prob -inf.
+            # #  To fix this we'd need to restrict the categorical to only allowed rows, keeping track of the indices,
+            # #  so that we correctly backpropagate the loss to the model.
             policy = torch.distributions.Categorical(probs)
             # batch x k
             actions = policy.sample((k,)).transpose(0, 1)  # TODO: DiCE estimator; differentiable sampling from policy?
-            # REINFORCE with baselines
+
+            # # Method for never getting already measured rows
+            # actions = torch.zeros(mask.size(0), k, dtype=torch.long).to(args.device)
+            # for i, sl_loss_mask in enumerate(loss_mask):
+            #     sl_mask_indices = sl_loss_mask.nonzero().flatten().long()
+            #     sl_logits = output[i, sl_mask_indices]
+            #     sl_probs = torch.nn.functional.softmax(sl_logits - torch.max(sl_logits, dim=0, keepdim=True)[0])
+            #     sl_policy = torch.distributions.Categorical(sl_probs)
+            #     sl_actions = sl_policy.sample((k,))
+            #     # Transform action indices to actual row indices
+            #     row_indices = sl_mask_indices[sl_actions]
+            #     actions[i, :] = row_indices
+
+            # for i, sl_ac in enumerate(actions):
+            #     for ac in sl_ac:
+            #         assert ac not in (loss_mask[i] == 0).nonzero().flatten()
+
+            # REINFORCE-like with baselines
             target = get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, impro_input, actions)
             epoch_targets[step + 1] += (target * loss_mask).to('cpu').numpy().sum(axis=0)
             epoch_target_counts[step + 1] += loss_mask.to('cpu').numpy().sum(axis=0)
 
             # TODO: Only works if all actions are unique within a sample
-            # # batch x k
-            # action_logprobs = torch.log(torch.gather(probs, 1, actions))
-            # action_rewards = torch.gather(target, 1, actions)
-            # # batch x 1
-            # avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
-            # # REINFORCE with self-baselines
-            # # batch x k
-            # loss = (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
-            # # batch x 1
-            # loss = loss.sum(dim=1)
-            # # 1 x 1
-            # loss = loss.mean()  # Average CrossEntLoss per slice per row
+            # batch x k
+            action_logprobs = torch.log(torch.gather(probs, 1, actions))
+            action_rewards = torch.gather(target, 1, actions)
+            # batch x 1
+            avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
+            # REINFORCE with self-baselines
+            # batch x k
+            loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
+            # batch x 1
+            loss = loss.sum(dim=1)
+            # 1 x 1
+            loss = loss.mean()
 
-            loss = 0
-            for i, sl_actions in enumerate(actions):
-                # TODO: Since we're sampling with replacement, we sometimes sample the same action twice for a given
-                #  slice. In order to not backprop the same sample twice, we only use uniquely sampled actions. In
-                #  expectation we still get unbiased gradients this way, but the expected  variance of our estimator
-                #  will be higher for slices for which we have fewer unique actions sampled.
-                #  A solution to this would be to sample without replacement, but the math for the corresponding
-                #  gradient estimator is more involved.
-                sl_actions = torch.unique(sl_actions)  # only use unique actions
-                sl_action_logprobs = torch.log(probs[i, sl_actions])  # get probs corresponding to slice and actions
-                sl_action_rewards = target[i, sl_actions]  # get rewards corresponding to slice and actions
-                sl_avg_reward = torch.mean(sl_action_rewards)  # baseline
-                sl_loss = (sl_action_logprobs * (sl_action_rewards - sl_avg_reward))  # REINFORCE with self-baseline
-                sl_loss = torch.sum(sl_loss) / (len(sl_actions) - 1)  # compensated average over action samples
-                loss += -1 * sl_loss / actions.size(0)  # divide by batch size
+            # if it == 3 and step == 0:
+            #     a = 10
+
+            # loss = 0
+            # for i, sl_actions in enumerate(actions):
+            #     # TODO: Since we're sampling with replacement, we sometimes sample the same action twice for a given
+            #     #  slice. In order to not backprop the same sample twice, we only use uniquely sampled actions. In
+            #     #  expectation we still get unbiased gradients this way, but the expected  variance of our estimator
+            #     #  will be higher for slices for which we have fewer unique actions sampled.
+            #     #  A solution to this would be to sample without replacement, but the math for the corresponding
+            #     #  gradient estimator is more involved.
+            #
+            #     # TODO: More importantly, the model seems to collapse to a policy that only samples a single row
+            #     #  quite often. Dividing by len(actions) - 1 then leads to nans in the loss.
+            #     #  Maybe we shouldn't only use unique actions.
+            #     sl_actions = torch.unique(sl_actions)  # only use unique actions
+            #     sl_action_logprobs = torch.log(probs[i, sl_actions])  # get probs corresponding to slice and actions
+            #     sl_action_rewards = target[i, sl_actions]  # get rewards corresponding to slice and actions
+            #     sl_avg_reward = torch.mean(sl_action_rewards)  # baseline
+            #     sl_loss = (sl_action_logprobs * (sl_action_rewards - sl_avg_reward))  # REINFORCE with self-baseline
+            #     sl_loss = torch.sum(sl_loss) / (len(sl_actions) - 1)  # compensated average over action samples
+            #     loss += -1 * sl_loss / actions.size(0)  # divide by batch size
 
             # optimiser.zero_grad()
             loss.backward()
@@ -177,15 +199,15 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         if it % args.report_interval == 0:
             if it == 0:
-                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l)
+                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, args.report_interval * l * 1e3)
                                       for i, l in enumerate(report_loss)])
             else:
-                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l) for i, l in enumerate(report_loss)])
+                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, l * 1e3) for i, l in enumerate(report_loss)])
             logging.info(
                 f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
                 f'Iter = [{it:4d}/{len(train_loader):4d}], '
                 f'Time = {time.perf_counter() - start_iter:.2f}s, '
-                f'Avg Loss per step = [{loss_str}] ',
+                f'Avg Loss per step x1e3 = [{loss_str}] ',
             )
 
             report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -198,7 +220,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
     save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
 
-    # wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+    wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
 
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
@@ -293,8 +315,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     for step, val in enumerate(ssims):
         writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
 
-    # wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
-    # wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
+    wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+    wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
 
     return ssims, time.perf_counter() - start
 
@@ -322,8 +344,8 @@ def main(args):
     args.run_dir = args.exp_dir / savestr
     args.run_dir.mkdir(parents=True, exist_ok=False)
 
-    # wandb.config.update(args)
-    # wandb.watch(model, log='all')
+    wandb.config.update(args)
+    wandb.watch(model, log='all')
 
     # Logging
     logging.info(args)
@@ -345,9 +367,9 @@ def main(args):
     # Training and evaluation
     k = args.num_target_rows
 
-    first_batch = next(iter(train_loader))
-    train_loader = [first_batch] * 10
-    dev_loader = [first_batch]
+    # first_batch = next(iter(train_loader))
+    # train_loader = [first_batch] * 10
+    # dev_loader = [first_batch]
 
     # dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
     # dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
@@ -475,8 +497,8 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    # wandb.init(project='mrimpro', config=args)
+    wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
-    # torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.enabled = False
     main(args)
