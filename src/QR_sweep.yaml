@@ -1,11 +1,11 @@
 program: src/train_improQR_model_sweep.py
-method: bayes
+method: random
 metric:
   name: val_ssims_10
   goal: maximize
 parameters:
   lr:
-    values: [0.001, 0.0005, 0.0001, 0.00005, 0.00001]
+    values: [0.001, 0.0005, 0.0001, 0.00005]
   fc-size:
     values: [256]
   in-chans:
@@ -15,12 +15,12 @@ parameters:
   num-chans:
     values: [16]
   batch-size:
-    values: [8, 16, 32]
+    values: [8, 16]
   num-epochs:
     values: [20, 30, 40, 50]
   lr-step-size:
     values: [10, 20, 30, 40]
-early_terminate:
-  type: hyperband
-  eta: 3
-  min_iter: 3
+#early_terminate:
+#  type: hyperband
+#  eta: 3
+#  min_iter: 3

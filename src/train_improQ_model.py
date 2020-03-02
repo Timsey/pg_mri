@@ -13,9 +13,10 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torchviz import make_dot
 from tensorboardX import SummaryWriter
+from torch.nn.modules.loss import CrossEntropyLoss
 
 from src.helpers.torch_metrics import ssim
-from src.helpers.losses import l1_loss_gradfixed, huber_loss
+from src.helpers.losses import l1_loss_gradfixed, huber_loss, NeuralSort
 from src.helpers.metrics import Metrics, METRIC_FUNCS
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters, plot_grad_flow,
@@ -149,10 +150,12 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     return target, output
 
 
-def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k):
+def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k, sorter):
     # TODO: try batchnorm in FC layers
     if not isinstance(model, str):
         model.train()
+    cross_ent = CrossEntropyLoss(reduction='none')
+
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
     start_epoch = start_iter = time.perf_counter()
@@ -196,9 +199,28 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 # Compute loss and backpropagate
                 #  TODO: Maybe use replay buffer type strategy here? Requires too much memory
                 #   (need to save all gradients)?
-                loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
-                # loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
-                loss = loss.sum(dim=1).mean() / loss_mask[0].sum()  # there are loss_mask[0].sum() targets per slice
+
+                # Using ranking loss (0 unmasked): comment this out and uncomment bit below for normal training.
+                # Mask out rows that don't have true computed targets: these now include rows that are 0
+                target = torch.where(loss_mask.byte(), target, -1e3 * torch.ones_like(target))
+                target = torch.argsort(target, dim=1, descending=True)[:, :k]
+                output = torch.where(loss_mask.byte(), output, -1e3 * torch.ones_like(output))
+                # batch x res x res (first res dim indexes the sorting, second indexes the rows)
+                # E.g. perm[0][i][j] gives the probabilities that the row in kspace at index j is the i'th best row.
+                perm = sorter(output)  # Differentiable sorter (softmax output)
+                perm = perm[:, :k, :]  # Only compare the k rows we computed targets for
+                # TODO: Implement efficient loss function that immediately works with softmax output
+                # sorter is already softmax output. If we want to use CELoss we need to transform them to logits first
+                perm = torch.log(perm + 1e-7)
+                # TODO: why is .contiguous() necessary: because of torch.where()
+                loss = cross_ent(perm.contiguous().view(output.size(0) * k, output.size(1)),
+                                 target.contiguous().view(output.size(0) * k))
+                loss = loss.mean()  # Average CrossEntLoss per slice per row
+
+                # Normal loss
+                # loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
+                # # loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
+                # loss = loss.sum(dim=1).mean() / loss_mask[0].sum()  # there are loss_mask[0].sum() targets per slice
 
                 # optimiser.zero_grad()
                 loss.backward()
@@ -538,6 +560,9 @@ def main(args):
         if not isinstance(model, str):
             wandb.watch(model, log='all')
 
+    args.start_tau = 0.1
+    args.tau_decay_rate = 1.0
+
     # Logging
     logging.info(args)
     logging.info(recon_model)
@@ -609,7 +634,11 @@ def main(args):
         # E.g. if num_epochs = 50, we decay a factor e after 10 epochs: 1/5th of all epochs
         if args.start_eps != 0.:
             eps = np.exp(np.log(args.start_eps) - args.eps_decay_rate * epoch / args.num_epochs)
-        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k)
+        tau = np.exp(np.log(args.start_tau) - args.tau_decay_rate * epoch / args.num_epochs)
+        sorter = NeuralSort(tau=tau, hard=False)
+
+        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k,
+                                             sorter)
         # TODO: do both of these? Make more efficient?
         dev_ssims, f_dev_ssims, _, _, dev_ssim_time = evaluate_recons(
             args, epoch, recon_model, model, dev_loader, writer)

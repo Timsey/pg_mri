@@ -3,7 +3,7 @@ Script for running sweeps on DAS5.
 
 Run as follows in mrimpro base dir:
 
-> CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages wandb sweep src/QS_sweep.yaml
+> CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages wandb sweep src/QR_sweep.yaml
 > CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages wandb agent timsey/mrimpro/SWEEP_ID
 
 """
@@ -28,7 +28,6 @@ sys.path.insert(0, '/Users/tbakker/Projects/mrimpro/')  # noqa: F401
 sys.path.insert(0, '/var/scratch/tbbakker/mrimpro/')  # noqa: F401
 
 from src.helpers.torch_metrics import ssim
-from src.helpers.losses import NeuralSort
 from src.helpers.utils import add_mask_params, save_json, check_args_consistency
 from src.helpers.data_loading import create_data_loaders
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
@@ -43,7 +42,7 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
-def get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, impro_input, actions):
+def get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, impro_input, actions, output):
     # actions is a batch x k tensor, containing row indices to compute targets for
 
     recon = impro_input[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
@@ -70,7 +69,8 @@ def get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, i
     scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
     impros = (scores - base_score) * 1  # TODO: is this 'normalisation'?
     # target = batch x rows, batch_train_rows and impros = batch x k
-    target = torch.zeros(actions.size(0), res).to(args.device)
+    # target = torch.zeros(actions.size(0), res).to(args.device)
+    target = output.detach().clone()
     for j, train_rows in enumerate(actions):
         # impros[j, 0] (slice j, row 0 in train_rows[j]) corresponds to the row train_rows[j, 0] = 9
         # (for instance). This means the improvement 9th row in the kspace ordering is element 0 in impros.
@@ -115,6 +115,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
             # Mask acquired rows
             logits = torch.where(loss_mask.byte(), output, -1e7 * torch.ones_like(output))
+            # logits = output
+
             # Softmax over 'logits' representing row scores
             probs = torch.nn.functional.softmax(logits - torch.max(logits, dim=1, keepdim=True)[0], dim=1)
             # # TODO: this possibly samples non-allowed rows sometimes, which have prob ~ 0, and thus log prob -inf.
@@ -141,7 +143,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             #         assert ac not in (loss_mask[i] == 0).nonzero().flatten()
 
             # REINFORCE-like with baselines
-            target = get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, impro_input, actions)
+            target = get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, impro_input, actions,
+                                 output)
             epoch_targets[step + 1] += (target * loss_mask).to('cpu').numpy().sum(axis=0)
             epoch_target_counts[step + 1] += loss_mask.to('cpu').numpy().sum(axis=0)
 
