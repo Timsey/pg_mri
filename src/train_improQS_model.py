@@ -118,7 +118,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     # TODO: try batchnorm in FC layers
     model.train()
     cross_ent = CrossEntropyLoss(reduction='none')
-    fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs)))
+    fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
     k = int(fk)
     logging.info('k: {:.2f} -> {}'.format(fk, k))
 
