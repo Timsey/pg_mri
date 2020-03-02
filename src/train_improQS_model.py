@@ -5,6 +5,7 @@ import random
 import argparse
 import pathlib
 import wandb
+import math
 from collections import defaultdict
 
 import numpy as np
@@ -117,6 +118,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     # TODO: try batchnorm in FC layers
     model.train()
     cross_ent = CrossEntropyLoss(reduction='none')
+    fk = max(2, math.ceil(np.exp(np.log(k) - 5 * epoch / args.num_epochs)))
+    k = int(fk)
+    logging.info('k: {:.2f} -> {}'.format(fk, k))
+
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
     start_epoch = start_iter = time.perf_counter()
@@ -520,7 +525,7 @@ def main(args):
             dev_loss = 0
             dev_loss_time = 0
 
-        dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
+        dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
         logging.info(
             f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
             f'DevLoss = {dev_loss:.3g} TrainTime = {train_time:.2f}s '
