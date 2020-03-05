@@ -128,9 +128,9 @@ class DataTransform:
         target = transforms.to_tensor(target)
         # In case resolution is not 320
         target = transforms.center_crop(target, (self.resolution, self.resolution))
-        # Normalize target
-        target = transforms.normalize(target, mean, std, eps=1e-11)
-        target = target.clamp(-6, 6)
+        # # Normalize target
+        # target = transforms.normalize(target, mean, std, eps=1e-11)
+        # target = target.clamp(-6, 6)
 
         # Need to return kspace and mask information when doing active learning, since we are
         # acquiring frequencies and updating the mask for a data point during an AL loop.

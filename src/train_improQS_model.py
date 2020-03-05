@@ -27,6 +27,7 @@ from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquir
                                                 recon_model_forward_pass, create_impro_model_input, load_recon_model)
 from src.impro_models.impro_model_utils import (load_impro_model, build_impro_model, build_optim, save_model,
                                                 impro_model_forward_pass)
+from src.helpers import transforms
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,16 +40,18 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
-def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model, recon_model, impro_input, eps, k):
+def get_pred_and_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, model, recon_model, impro_input,
+                        data_range, eps, k):
     # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
     # squeeze mask such that batch dimension doesn't vanish if it's 1.
     output, train = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
 
     recon = impro_input[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
-    norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
+    unnorm_recon = recon * gt_std + gt_mean  # Back to original scale for metric
 
     # shape = batch
-    base_score = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)  # keep channel dim = 1
+    base_score = ssim(unnorm_recon, unnorm_gt, size_average=False,
+                      data_range=data_range).mean(-1).mean(-1)  # keep channel dim = 1
 
     # TODO: efficiently compute forward pass: don't have to do this for rows already acquired. Thus we should
     #  for every batch determine the fraction of rows to train on that have been acquired. Then do the below topk
@@ -90,7 +93,7 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
 
     # Acquire chosen rows, and compute the improvement target for each (batched)
     # shape = batch x rows = k x res x res
-    zf_exp, mean_exp, std_exp = acquire_new_zf_exp_batch(kspace, masked_kspace, batch_train_rows)
+    zf_exp, _, _ = acquire_new_zf_exp_batch(kspace, masked_kspace, batch_train_rows)
     # shape = batch . tk x 1 x res x res, so that we can run the forward model for all rows in the batch
     zf_input = zf_exp.view(mask.size(0) * k, 1, res, res)
     # shape = batch . tk x 2 x res x res
@@ -99,11 +102,11 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
     recons = recons_output[:, 0:1, ...]
     # shape = batch x tk x res x res
     recons = recons.view(mask.size(0), k, res, res)
-    norm_recons = recons * std_exp + mean_exp  # TODO: Normalisation necessary?
-    gt = gt.expand(-1, k, -1, -1)
+    unnorm_recons = recons * gt_std + gt_mean  # TODO: Normalisation necessary?
+    gt_exp = unnorm_gt.expand(-1, k, -1, -1)
     # scores = batch x tk (channels), base_score = batch x 1
-    scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
-    impros = (scores - base_score) * 100  # TODO: is this 'normalisation'?
+    scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
+    impros = (scores - base_score) * 1  # TODO: is this 'normalisation'?
     # target = batch x rows, batch_train_rows and impros = batch x tk
     target = output.clone().detach()  # clone is necessary, otherwise changing target also changes output: 0 loss always
     for j, train_rows in enumerate(batch_train_rows):
@@ -131,7 +134,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     epoch_target_counts = defaultdict(lambda: 0)
 
     for it, data in enumerate(train_loader):
-        kspace, masked_kspace, mask, zf, gt, mean, std, _, _ = data
+        kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -140,9 +143,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # shape after unsqueeze = batch x channel x columns x rows
         zf = zf.unsqueeze(1).to(args.device)
         gt = gt.unsqueeze(1).to(args.device)
-        mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-        std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-        gt = gt * std + mean
+        gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
+        gt = gt.clamp(-6, 6)
+        unnorm_gt = gt * gt_std + gt_mean
+        data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
         # Base reconstruction model forward pass
         impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -153,8 +157,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         optimiser.zero_grad()
         for step in range(args.acquisition_steps):
-            target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
-                                                 recon_model, impro_input, eps=eps, k=k)
+            target, output = get_pred_and_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, model,
+                                                 recon_model, impro_input, data_range, eps=eps, k=k)
             loss_mask = (target != output).float()
             epoch_targets[step + 1] += (target * loss_mask).to('cpu').numpy().sum(axis=0)
             epoch_target_counts[step + 1] += loss_mask.to('cpu').numpy().sum(axis=0)
@@ -196,8 +200,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
             # Acquire row for next step: GREEDY
             _, next_rows = torch.max(output, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
-            impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                          recon_model)
+            impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                     recon_model)
 
         optimiser.step()
         if args.verbose >= 3:
@@ -257,7 +261,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter):
     start = time.perf_counter()
     with torch.no_grad():
         for _, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, mean, std, _, _ = data
+            kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
             # TODO: Maybe normalisation unnecessary for SSIM target?
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
@@ -266,9 +270,9 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter):
             # shape after unsqueeze = batch x channel x columns x rows
             zf = zf.unsqueeze(1).to(args.device)
             gt = gt.unsqueeze(1).to(args.device)
-            mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            gt = gt * std + mean
+            gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
+            gt = gt.clamp(-6, 6)
+            unnorm_gt = gt * gt_std + gt_mean
 
             # Base reconstruction model forward pass
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -276,7 +280,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter):
             for step in range(args.acquisition_steps):
                 # Get impro model input and target:
                 # this step requires many forward passes through the reconstruction model
-                target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, mean, std, model,
+                target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, gt_mean, gt_std, model,
                                                      recon_model, impro_input, eps, k)
 
                 # Improvement model output
@@ -286,8 +290,8 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter):
 
                 # Greedy policy (size = batch)  # TODO: is this a good idea?
                 _, next_rows = torch.max(output, dim=1)
-                impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                              recon_model)
+                impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                         recon_model)
         if args.wandb:
             wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
         for step, loss in enumerate(epoch_loss):
@@ -313,7 +317,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     start = time.perf_counter()
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, mean, std, fname, slices = data
+            kspace, masked_kspace, mask, zf, gt, _, _, fname, slices = data
             tbs += mask.size(0)
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
@@ -322,20 +326,22 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
             # shape after unsqueeze = batch x channel x columns x rows
             zf = zf.unsqueeze(1).to(args.device)
             gt = gt.unsqueeze(1).to(args.device)
-            mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            gt = gt * std + mean
+            gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
+            gt = gt.clamp(-6, 6)
+            unnorm_gt = gt * gt_std + gt_mean
+            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
             # Base reconstruction model forward pass
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
             if args.save_sens:
                 save_sensitivity(args, impro_input, epoch, 0, it)
 
-            norm_recon = impro_input[:, 0:1, :, :] * std + mean
-            init_ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
+            unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
+            init_ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
+                                 data_range=data_range).mean(dim=(-1, -2)).sum()
 
             batch_ssims = [init_ssim_val.item()]
-            # eval_rec = norm_recon.to('cpu')
+            # eval_rec = unnorm_recon.to('cpu')
             # for i in range(eval_rec.size(0)):
             #     recons[fname[i]]['center'][0].append(eval_rec[i].squeeze().numpy())
             #     recons[fname[i]]['improv'][0].append(eval_rec[i].squeeze().numpy())
@@ -360,14 +366,15 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 next_rows = torch.tensor(next_rows).long().to(args.device)
 
                 # Acquire this row
-                impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                              recon_model)
+                impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                         recon_model)
                 if args.save_sens:
                     save_sensitivity(args, impro_input, epoch, step + 1, it)
 
-                norm_recon = impro_input[:, 0:1, :, :] * std + mean
+                unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
                 # shape = 1
-                ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
+                ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
+                                data_range=data_range).mean(dim=(-1, -2)).sum()
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
 

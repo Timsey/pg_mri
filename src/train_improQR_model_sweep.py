@@ -33,6 +33,7 @@ from src.helpers.data_loading import create_data_loaders
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
                                                 recon_model_forward_pass, create_impro_model_input, load_recon_model)
 from src.impro_models.impro_model_utils import build_impro_model, build_optim, save_model, impro_model_forward_pass
+from src.helpers import transforms
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -42,19 +43,21 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
-def get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, impro_input, actions, output):
+def get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model, impro_input,
+                actions, output, data_range):
     # actions is a batch x k tensor, containing row indices to compute targets for
 
     recon = impro_input[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
-    norm_recon = recon * std + mean  # Back to original scale for metric  # TODO: is this unnormalisation necessary?
+    unnorm_recon = recon * gt_std + gt_mean  # Back to original scale for metric
 
     # shape = batch
-    base_score = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)  # keep channel dim = 1
+    base_score = ssim(unnorm_recon, unnorm_gt, size_average=False,
+                      data_range=data_range).mean(-1).mean(-1)  # keep channel dim = 1
 
     res = mask.size(-2)
     # Acquire chosen rows, and compute the improvement target for each (batched)
     # shape = batch x rows = k x res x res
-    zf_exp, mean_exp, std_exp = acquire_new_zf_exp_batch(kspace, masked_kspace, actions)
+    zf_exp, _, _ = acquire_new_zf_exp_batch(kspace, masked_kspace, actions)
     # shape = batch . k x 1 x res x res, so that we can run the forward model for all rows in the batch
     zf_input = zf_exp.view(actions.size(0) * actions.size(1), 1, res, res)
     # shape = batch . k x 2 x res x res
@@ -63,10 +66,10 @@ def get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, i
     recons = recons_output[:, 0:1, ...]
     # shape = batch x k x res x res
     recons = recons.view(actions.size(0), actions.size(1), res, res)
-    norm_recons = recons * std_exp + mean_exp  # TODO: Normalisation necessary?
-    gt = gt.expand(-1, actions.size(1), -1, -1)
+    unnorm_recons = recons * gt_std + gt_mean  # TODO: Normalisation necessary?
+    gt_exp = unnorm_gt.expand(-1, actions.size(1), -1, -1)
     # scores = batch x k (channels), base_score = batch x 1
-    scores = ssim(norm_recons, gt, size_average=False, data_range=1e-4).mean(-1).mean(-1)
+    scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
     impros = (scores - base_score) * 1  # TODO: is this 'normalisation'?
     # target = batch x rows, batch_train_rows and impros = batch x k
     # target = torch.zeros(actions.size(0), res).to(args.device)
@@ -91,7 +94,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     epoch_target_counts = defaultdict(lambda: 0)
 
     for it, data in enumerate(train_loader):
-        kspace, masked_kspace, mask, zf, gt, mean, std, _, _ = data
+        kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -100,9 +103,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # shape after unsqueeze = batch x channel x columns x rows
         zf = zf.unsqueeze(1).to(args.device)
         gt = gt.unsqueeze(1).to(args.device)
-        mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-        std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-        gt = gt * std + mean
+        gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
+        gt = gt.clamp(-6, 6)
+        unnorm_gt = gt * gt_std + gt_mean
+        data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
         # Base reconstruction model forward pass
         impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -143,8 +147,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             #         assert ac not in (loss_mask[i] == 0).nonzero().flatten()
 
             # REINFORCE-like with baselines
-            target = get_rewards(args, kspace, masked_kspace, mask, gt, mean, std, recon_model, impro_input, actions,
-                                 output)
+            target = get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model,
+                                 impro_input, actions, output, data_range)
             epoch_targets[step + 1] += (target * loss_mask).to('cpu').numpy().sum(axis=0)
             epoch_target_counts[step + 1] += loss_mask.to('cpu').numpy().sum(axis=0)
 
@@ -195,8 +199,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
             # Acquire row for next step: GREEDY
             _, next_rows = torch.max(logits, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
-            impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                          recon_model)
+            impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                     recon_model)
 
         optimiser.step()
 
@@ -223,7 +227,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
     save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
 
-    wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+    # wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
 
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
@@ -258,7 +262,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     start = time.perf_counter()
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, mean, std, fname, slices = data
+            kspace, masked_kspace, mask, zf, gt, _, _, fname, slices = data
             tbs += mask.size(0)
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
@@ -267,15 +271,17 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
             # shape after unsqueeze = batch x channel x columns x rows
             zf = zf.unsqueeze(1).to(args.device)
             gt = gt.unsqueeze(1).to(args.device)
-            mean = mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            std = std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            gt = gt * std + mean
+            gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
+            gt = gt.clamp(-6, 6)
+            unnorm_gt = gt * gt_std + gt_mean
+            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
             # Base reconstruction model forward pass
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
 
-            norm_recon = impro_input[:, 0:1, :, :] * std + mean
-            init_ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
+            unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
+            init_ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
+                                 data_range=data_range).mean(dim=(-1, -2)).sum()
 
             batch_ssims = [init_ssim_val.item()]
 
@@ -298,12 +304,21 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
                 next_rows = torch.tensor(next_rows).long().to(args.device)
 
                 # Acquire this row
-                impro_input, zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                              recon_model)
+                impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                         recon_model)
 
-                norm_recon = impro_input[:, 0:1, :, :] * std + mean
+                # TODO: this is weird. The recon model is trained to reconstruct targets normalised by the original
+                #  zf image's normalisation constants, but now we're un-normalising the outputted reconstruction by
+                #  the few-step-ahead zf image's normalisation constants. This un-normalised output reconstruction
+                #  may thus have a different scale that the target image (which is normalised by the original zf image's
+                #  normalisation constants). We must either use the original zf's constants for un-normalisation when
+                #  computing SSIM scores, or we use the target's normalisation constants, which seems more justified.
+                #  Note that currently we don't do normalisation based on the targets, so this will require some
+                #  changes to the DataLoader.
+                unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
                 # shape = 1
-                ssim_val = ssim(norm_recon, gt, size_average=False, data_range=1e-4).mean(dim=(-1, -2)).sum()
+                ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
+                                data_range=data_range).mean(dim=(-1, -2)).sum()
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
 
@@ -318,8 +333,9 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     for step, val in enumerate(ssims):
         writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
 
-    wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
-    wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
+    # wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+    # wandb.log({'val_ssims.10': ssims[-1]}, step=epoch + 1)
+    # wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
 
     return ssims, time.perf_counter() - start
 
@@ -347,8 +363,8 @@ def main(args):
     args.run_dir = args.exp_dir / savestr
     args.run_dir.mkdir(parents=True, exist_ok=False)
 
-    wandb.config.update(args)
-    wandb.watch(model, log='all')
+    # wandb.config.update(args)
+    # wandb.watch(model, log='all')
 
     # Logging
     logging.info(args)
@@ -500,7 +516,7 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    wandb.init(project='mrimpro', config=args)
+    # wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     torch.backends.cudnn.enabled = False

@@ -185,7 +185,8 @@ def complex_center_crop(data, shape):
     return data[..., w_from:w_to, h_from:h_to, :]
 
 
-def normalize(data, mean, stddev, eps=0.):
+def normalize(data, mean=None, stddev=None, dims=None, eps=0.):
+    # TODO: Same as normalize_instance_batch() in recon_model_utils?
     """
     Normalize the given tensor using:
         (data - mean) / (stddev + eps)
@@ -199,7 +200,13 @@ def normalize(data, mean, stddev, eps=0.):
     Returns:
         torch.Tensor: Normalized tensor
     """
-    return (data - mean) / (stddev + eps)
+    if mean is None or stddev is None:
+        assert dims is not None
+        mean = data.mean(dim=dims, keepdim=True)
+        stddev = data.std(dim=dims, keepdim=True)
+        return (data - mean) / (stddev + eps), mean, stddev
+    else:
+        return (data - mean) / (stddev + eps)
 
 
 def normalize_instance(data, eps=0.):
