@@ -224,7 +224,7 @@ def normalize_instance(data, eps=0.):
         """
     mean = data.mean()
     std = data.std()
-    return normalize(data, mean, std, eps), mean, std
+    return normalize(data, mean=mean, stddev=std, eps=eps), mean, std
 
 
 # Helper functions

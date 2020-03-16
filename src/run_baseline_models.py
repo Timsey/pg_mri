@@ -58,7 +58,7 @@ def get_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, re
     recons = recons_output[:, 0:1, ...]
     # shape = batch x tk x res x res
     recons = recons.view(mask.size(0), tk, res, res)
-    unnorm_recons = recons * gt_mean + gt_std  # TODO: Normalisation necessary?
+    unnorm_recons = recons * gt_std + gt_mean  # TODO: Normalisation necessary?
     gt_exp = unnorm_gt.expand(-1, tk, -1, -1)
     # scores = batch x tk (channels), base_score = batch x 1
     scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
