@@ -23,8 +23,8 @@ import torch
 from tensorboardX import SummaryWriter
 
 import sys
-sys.path.insert(0, '/home/timsey/Projects/mrimpro/')  # noqa: F401
-sys.path.insert(0, '/Users/tbakker/Projects/mrimpro/')  # noqa: F401
+# sys.path.insert(0, '/home/timsey/Projects/mrimpro/')  # noqa: F401
+# sys.path.insert(0, '/Users/tbakker/Projects/mrimpro/')  # noqa: F401
 sys.path.insert(0, '/var/scratch/tbbakker/mrimpro/')  # noqa: F401
 
 from src.helpers.torch_metrics import ssim
@@ -206,10 +206,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         if it % args.report_interval == 0:
             if it == 0:
-                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, args.report_interval * l * 1e3)
+                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e3)
                                       for i, l in enumerate(report_loss)])
             else:
-                loss_str = ", ".join(["{}: {:.3f}".format(i + 1, l * 1e3) for i, l in enumerate(report_loss)])
+                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l * 1e3) for i, l in enumerate(report_loss)])
             logging.info(
                 f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
                 f'Iter = [{it:4d}/{len(train_loader):4d}], '
@@ -227,7 +227,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
     save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
 
-    # wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+    if args.wandb:
+        wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
 
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
@@ -242,8 +243,88 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
         mask[sl, :, :, next_row, :] = 1.
         masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
     # Get new reconstruction for batch
-    impro_input = create_impro_model_input(args, recon_model, zf, mask)
+    impro_input = create_impro_model_input(args, recon_model, zf, mask)  # TODO: args is global here!
     return impro_input, zf, mean, std, mask, masked_kspace
+
+
+def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
+    # TODO: sorter
+    """
+    Evaluates using loss function: i.e. how close are the predicted improvements to the actual improvements.
+    """
+    model.eval()
+    epoch_loss = [0. for _ in range(args.acquisition_steps)]
+    start = time.perf_counter()
+    global_step = epoch * len(dev_loader)
+
+    with torch.no_grad():
+        for it, data in enumerate(dev_loader):
+            kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
+            # TODO: Maybe normalisation unnecessary for SSIM target?
+            # shape after unsqueeze = batch x channel x columns x rows x complex
+            kspace = kspace.unsqueeze(1).to(args.device)
+            masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
+            mask = mask.unsqueeze(1).to(args.device)
+            # shape after unsqueeze = batch x channel x columns x rows
+            zf = zf.unsqueeze(1).to(args.device)
+            gt = gt.unsqueeze(1).to(args.device)
+            gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
+            gt = gt.clamp(-6, 6)
+            unnorm_gt = gt * gt_std + gt_mean
+            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+
+            # Base reconstruction model forward pass
+            impro_input = create_impro_model_input(args, recon_model, zf, mask)
+
+            for step in range(args.acquisition_steps):
+                # TODO: Output nans?
+                output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
+                loss_mask = (mask == 0).squeeze().float()
+
+                # Mask acquired rows
+                logits = torch.where(loss_mask.byte(), output, -1e7 * torch.ones_like(output))
+                # logits = output
+
+                # Softmax over 'logits' representing row scores
+                probs = torch.nn.functional.softmax(logits - torch.max(logits, dim=1, keepdim=True)[0], dim=1)
+                # TODO: this possibly samples non-allowed rows sometimes, which have prob ~ 0, and thus log prob -inf.
+                #  To fix this we'd need to restrict the categorical to only allowed rows, keeping track of the indices,
+                #  so that we correctly backpropagate the loss to the model.
+                policy = torch.distributions.Categorical(probs)
+                # batch x k
+                actions = policy.sample((k,)).transpose(0, 1)
+
+                # REINFORCE-like with baselines
+                target = get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model,
+                                     impro_input, actions, output, data_range)
+
+                # TODO: Only works if all actions are unique within a sample
+                # batch x k
+                action_logprobs = torch.log(torch.gather(probs, 1, actions))
+                action_rewards = torch.gather(target, 1, actions)
+                # batch x 1
+                avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
+                # REINFORCE with self-baselines
+                # batch x k
+                loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
+                # batch x 1
+                loss = loss.sum(dim=1)
+                # 1 x 1
+                loss = loss.mean()
+                epoch_loss[step] += loss.item() / len(dev_loader) * mask.size(0) / args.batch_size
+
+                writer.add_scalar('DevLoss_step{}'.format(step), loss.item(), global_step + it)
+
+                # Acquire row for next step: GREEDY
+                _, next_rows = torch.max(logits, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
+                impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                         recon_model)
+
+        if args.wandb:
+            wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+        for step, loss in enumerate(epoch_loss):
+            writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
+    return np.mean(epoch_loss), time.perf_counter() - start
 
 
 def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
@@ -333,9 +414,10 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
     for step, val in enumerate(ssims):
         writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
 
-    # wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
-    # wandb.log({'val_ssims.10': ssims[-1]}, step=epoch + 1)
-    # wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
+    if args.wandb:
+        wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+        wandb.log({'val_ssims.10': ssims[-1]}, step=epoch + 1)
+        wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
 
     return ssims, time.perf_counter() - start
 
@@ -363,8 +445,9 @@ def main(args):
     args.run_dir = args.exp_dir / savestr
     args.run_dir.mkdir(parents=True, exist_ok=False)
 
-    # wandb.config.update(args)
-    # wandb.watch(model, log='all')
+    if args.wandb:
+        wandb.config.update(args)
+        wandb.watch(model, log='all')
 
     # Logging
     logging.info(args)
@@ -398,12 +481,14 @@ def main(args):
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k)
+        dev_loss, dev_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
         dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
 
-        dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
+        dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
         logging.info(
             f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
-            f' TrainTime = {train_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
+            f'DevLoss = {dev_loss:.3g} TrainTime = {train_time:.2f}s '
+            f'DevTime = {dev_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
         )
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
         save_model(args, args.run_dir, epoch, model, optimiser, None, False)
@@ -516,8 +601,11 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    # wandb.init(project='mrimpro', config=args)
+    args.wandb = False
+
+    if args.wandb:
+        wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
-    torch.backends.cudnn.enabled = False
+    # torch.backends.cudnn.enabled = False
     main(args)

@@ -246,7 +246,7 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
         mask[sl, :, :, next_row, :] = 1.
         masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
     # Get new reconstruction for batch
-    impro_input = create_impro_model_input(args, recon_model, zf, mask)
+    impro_input = create_impro_model_input(args, recon_model, zf, mask)  # TODO: args is global here!
     return impro_input, zf, mean, std, mask, masked_kspace
 
 
@@ -497,7 +497,7 @@ def main(args):
     k = args.num_target_rows
 
     dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
-    dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
+    dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 

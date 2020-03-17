@@ -83,7 +83,7 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
         mask[sl, :, :, next_row, :] = 1.
         masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
     # Get new reconstruction for batch
-    impro_input = recon_model_forward_pass(args, recon_model, zf)
+    impro_input = recon_model_forward_pass(args, recon_model, zf)  # TODO: args is global here!
     return impro_input, zf, mean, std, mask, masked_kspace
 
 
