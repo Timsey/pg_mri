@@ -27,7 +27,7 @@ class ConvBlock(nn.Module):
                   nn.ReLU(),
                   nn.Dropout2d(drop_prob)]  # To do MC dropout, need model.train() at eval time.
 
-        if pool_size:
+        if pool_size > 1:
             layers.append(nn.MaxPool2d(pool_size))
 
         self.layers = nn.Sequential(*layers)
@@ -48,7 +48,7 @@ class ConvBlock(nn.Module):
 
 
 class ConvPoolModel(nn.Module):
-    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob, fc_size):
+    def __init__(self, resolution, in_chans, chans, num_pool_layers, four_pools, drop_prob, fc_size, pool_stride):
         """
         Args:
             in_chans (int): Number of channels in the input to the U-Net model.
@@ -63,7 +63,7 @@ class ConvPoolModel(nn.Module):
         self.in_chans = in_chans
         self.chans = chans
         self.num_pool_layers = num_pool_layers
-        self.four_pools = four_pools
+        # self.four_pools = four_pools
         self.drop_prob = drop_prob
         self.fc_size = fc_size
 
@@ -73,31 +73,39 @@ class ConvPoolModel(nn.Module):
         # Every block except the first 2x2 max pools, reducing output by a factor 4
         # Every block except the first doubles channels, increasing output by a factor 2
 
-        self.pool_size = 4
+        # self.pool_size = 4
+        self.pool_size = 2
+        self.pool_stride = pool_stride
         self.flattened_size = resolution ** 2 * chans
 
         # Initial from in_chans to chans
-        self.channel_layer = ConvBlock(in_chans, chans, drop_prob, pool_size=False)
+        self.channel_layer = ConvBlock(in_chans, chans, drop_prob, pool_size=1)
         # Downsampling convolution
         # These are num_pool_layers layers where each layers 2x2 max pools, and doubles the number of channels
         self.down_sample_layers = nn.ModuleList([])
         ch = chans
         for i in range(num_pool_layers):
-            if i == self.four_pools:  # First two layers use 4x4 pooling, rest use 2x2 pooling
-                self.pool_size = 2
-            self.down_sample_layers += [ConvBlock(ch, ch * 2, drop_prob, pool_size=self.pool_size)]
+            if i % self.pool_stride == 0:
+                pool_size = 2
+            else:
+                pool_size = 1
+            # if i == self.four_pools:  # First two layers use 4x4 pooling, rest use 2x2 pooling
+            #     self.pool_size = 2
+            self.down_sample_layers += [ConvBlock(ch, ch * 2, drop_prob, pool_size=pool_size)]
             # Keep track of number of output neurons
-            self.flattened_size = self.flattened_size * 2 // self.pool_size ** 2
+            self.flattened_size = self.flattened_size * 2 // pool_size ** 2
             ch *= 2
 
         self.fc_out = nn.Sequential(
             nn.Linear(in_features=self.flattened_size, out_features=self.fc_size),
             # nn.BatchNorm1d(num_features=1024),
             nn.LeakyReLU(),
-            nn.Linear(in_features=self.fc_size, out_features=self.fc_size),
+            # nn.Linear(in_features=self.fc_size, out_features=self.fc_size),
+            nn.Linear(in_features=self.fc_size, out_features=self.fc_size // 4),
             # nn.BatchNorm1d(num_features=512),
             nn.LeakyReLU(),
-            nn.Linear(in_features=self.fc_size, out_features=resolution)
+            # nn.Linear(in_features=self.fc_size, out_features=resolution)
+            nn.Linear(in_features=self.fc_size // 4, out_features=resolution)
         )
 
     def forward(self, image):
@@ -129,6 +137,7 @@ def build_impro_convpool_model(args):
         num_pool_layers=args.num_pools,
         four_pools=args.of_which_four_pools,
         drop_prob=args.drop_prob,
-        fc_size=args.fc_size
+        fc_size=args.fc_size,
+        pool_stride=args.pool_stride
     ).to(args.device)
     return model

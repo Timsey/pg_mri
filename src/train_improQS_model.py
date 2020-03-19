@@ -642,6 +642,7 @@ def create_arg_parser():
     parser.add_argument('--out-chans', type=int, default=32, help='Number of ConvNet output channels: these are input '
                         "for the FC layers that follow. Only used for 'bottle' models.")
     parser.add_argument('--fc-size', default=512, type=int, help='Size (width) of fully connected layer(s).')
+    parser.add_argument('--pool-stride', default=1, type=int, help='Each how many layers to do max pooling.')
     parser.add_argument('--maskconv-depth', default=3, type=int, help='One-way layer depth of maskconv modules.')
     parser.add_argument('--arch', default='comb_mask', choices=['loc_mask', 'comb_nomask', 'comb_mask'],
                         help='Type of architecture to use in convpoolmaskconv models.')
