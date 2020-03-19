@@ -123,7 +123,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     cross_ent = CrossEntropyLoss(reduction='none')
     fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
     k = int(fk)
-    logging.info('k: {:.2f} -> {}'.format(fk, k))
+    logging.info('train k: {:.2f} -> {}'.format(fk, k))
 
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -250,53 +250,80 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
     return impro_input, zf, mean, std, mask, masked_kspace
 
 
-def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter):
-    # TODO: sorter
-    """
-    Evaluates using loss function: i.e. how close are the predicted improvements to the actual improvements.
-    """
+def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter):
+    # TODO: try batchnorm in FC layers
     model.eval()
-    eps = 0  # Only evaluate for acquisitions the model actually wants to do
+    cross_ent = CrossEntropyLoss(reduction='none')
+    fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
+    k = int(fk)
+    logging.info('dev k: {:.2f} -> {}'.format(fk, k))
+
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
-    start = time.perf_counter()
-    with torch.no_grad():
-        for _, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
-            # TODO: Maybe normalisation unnecessary for SSIM target?
-            # shape after unsqueeze = batch x channel x columns x rows x complex
-            kspace = kspace.unsqueeze(1).to(args.device)
-            masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
-            mask = mask.unsqueeze(1).to(args.device)
-            # shape after unsqueeze = batch x channel x columns x rows
-            zf = zf.unsqueeze(1).to(args.device)
-            gt = gt.unsqueeze(1).to(args.device)
-            gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
-            gt = gt.clamp(-6, 6)
-            unnorm_gt = gt * gt_std + gt_mean
+    start_epoch = time.perf_counter()
+    global_step = epoch * len(dev_loader)
 
-            # Base reconstruction model forward pass
-            impro_input = create_impro_model_input(args, recon_model, zf, mask)
+    for it, data in enumerate(dev_loader):
+        kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
+        # TODO: Maybe normalisation unnecessary for SSIM target?
+        # shape after unsqueeze = batch x channel x columns x rows x complex
+        kspace = kspace.unsqueeze(1).to(args.device)
+        masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
+        mask = mask.unsqueeze(1).to(args.device)
+        # shape after unsqueeze = batch x channel x columns x rows
+        zf = zf.unsqueeze(1).to(args.device)
+        gt = gt.unsqueeze(1).to(args.device)
+        gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
+        gt = gt.clamp(-6, 6)
+        unnorm_gt = gt * gt_std + gt_mean
+        data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
-            for step in range(args.acquisition_steps):
-                # Get impro model input and target:
-                # this step requires many forward passes through the reconstruction model
-                target, output = get_pred_and_target(args, kspace, masked_kspace, mask, gt, gt_mean, gt_std, model,
-                                                     recon_model, impro_input, eps, k)
+        # Base reconstruction model forward pass
+        impro_input = create_impro_model_input(args, recon_model, zf, mask)
 
-                # Improvement model output
-                # loss = l1_loss_gradfixed(output, target, reduction='mean')
-                loss = huber_loss(output, target, reduction='mean')  # TODO: Think about loss function
-                epoch_loss[step] += loss.item() / len(dev_loader)  # per batch
+        for step in range(args.acquisition_steps):
+            target, output = get_pred_and_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, model,
+                                                 recon_model, impro_input, data_range, eps=eps, k=k)
+            loss_mask = (target != output).float()
 
-                # Greedy policy (size = batch)  # TODO: is this a good idea?
-                _, next_rows = torch.max(output, dim=1)
-                impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                         recon_model)
-        if args.wandb:
-            wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
-        for step, loss in enumerate(epoch_loss):
-            writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
-    return np.mean(epoch_loss), time.perf_counter() - start
+            # Compute loss and backpropagate
+            #  TODO: Maybe use replay buffer type strategy here? Requires too much memory
+            #   (need to save all gradients)?
+            # Using ranking loss  # TODO: start caring more about best row as training proceeds?
+            # Mask out rows that don't have true computed targets
+            target = torch.where(loss_mask.byte(), target, -1e3 * torch.ones_like(target))
+            target = torch.argsort(target, dim=1, descending=True)[:, :k]
+            # Make sure that these rows are not used in loss: at initialisation the model regularly outputs negative
+            # values for rows (and also some true row values are slightly negative). If we set acquired row scores to
+            # 0, then the sorter will put these before the negative rows, leading to the output vector containing row
+            # indices of acquired rows. To prevent this, we set the values for acquired rows to strongly negative
+            # values.
+            # TODO: If sorting is slow, we can also just extract the k rows we computed targets for from output, sort
+            #  those, and then re-index them to their original index.
+            output = torch.where(loss_mask.byte(), output, -1e3 * torch.ones_like(output))
+            # batch x res x res (first res dim indexes the sorting, second indexes the rows)
+            # E.g. perm[0][i][j] gives the probabilities that the row in kspace at index j is the i'th best row.
+            perm = sorter(output)  # Differentiable sorter (softmax output)
+            perm = perm[:, :k, :]  # Only compare the k rows we computed targets for
+            # TODO: Implement efficient loss function that immediately works with softmax output
+            # sorter is already softmax output. If we want to use CELoss we need to transform them to logits first
+            perm = torch.log(perm + 1e-7)
+            # TODO: why is .contiguous() necessary: because of torch.where()
+            loss = cross_ent(perm.contiguous().view(output.size(0) * k, output.size(1)),
+                             target.contiguous().view(output.size(0) * k))
+            loss = loss.mean()  # Average CrossEntLoss per slice per row
+
+            epoch_loss[step] += loss.item() / len(dev_loader) * mask.size(0) / args.batch_size
+            writer.add_scalar('DevLoss_step{}'.format(step), loss.item(), global_step + it)
+
+            # Acquire row for next step: GREEDY
+            _, next_rows = torch.max(output, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
+            impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                     recon_model)
+
+    if args.wandb:
+        wandb.log({'dev_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+
+    return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
 
 def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
@@ -521,7 +548,7 @@ def main(args):
         # visualise(args, epoch, model, display_loader, writer)
 
         if args.do_dev_loss:
-            dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, sorter)
+            dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter)
             if not isinstance(model, str):
                 is_new_best = dev_loss < best_dev_loss
                 best_dev_loss = min(best_dev_loss, dev_loss)

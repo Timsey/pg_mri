@@ -296,7 +296,6 @@ def main(args):
     # Add mask parameters for training
     args = add_mask_params(args, recon_args)
 
-    start_epoch = 0
     # Create directory to store results in
     savestr = 'res{}_al{}_accel{}_{}_{}_{}'.format(args.resolution, args.acquisition_steps, args.accelerations,
                                                    args.model_type, args.recon_model_name,
@@ -327,16 +326,16 @@ def main(args):
         _, dev_loader, _, _ = create_data_loaders(args)
         oracle_dev_ssims, oracle_time = run_oracle(args, recon_model, dev_loader)
 
-    dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(oracle_dev_ssims)])
+    dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_dev_ssims)])
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
 
     # For storing in wandb
-    for epoch in range(start_epoch, args.num_epochs):
+    for epoch in range(args.num_epochs + 1):
         logging.info(f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] ')
         if args.model_type == 'random':
             oracle_dev_ssims, oracle_time = run_oracle(args, recon_model, dev_loader)
-            dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(oracle_dev_ssims)])
+            dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_dev_ssims)])
             logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
         if args.wandb:

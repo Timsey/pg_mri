@@ -154,7 +154,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     # TODO: try batchnorm in FC layers
     if not isinstance(model, str):
         model.train()
-    cross_ent = CrossEntropyLoss(reduction='none')
+    # cross_ent = CrossEntropyLoss(reduction='none')
 
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -200,27 +200,27 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 #  TODO: Maybe use replay buffer type strategy here? Requires too much memory
                 #   (need to save all gradients)?
 
-                # Using ranking loss (0 unmasked): comment this out and uncomment bit below for normal training.
-                # Mask out rows that don't have true computed targets: these now include rows that are 0
-                target = torch.where(loss_mask.byte(), target, -1e3 * torch.ones_like(target))
-                target = torch.argsort(target, dim=1, descending=True)[:, :k]
-                output = torch.where(loss_mask.byte(), output, -1e3 * torch.ones_like(output))
-                # batch x res x res (first res dim indexes the sorting, second indexes the rows)
-                # E.g. perm[0][i][j] gives the probabilities that the row in kspace at index j is the i'th best row.
-                perm = sorter(output)  # Differentiable sorter (softmax output)
-                perm = perm[:, :k, :]  # Only compare the k rows we computed targets for
-                # TODO: Implement efficient loss function that immediately works with softmax output
-                # sorter is already softmax output. If we want to use CELoss we need to transform them to logits first
-                perm = torch.log(perm + 1e-7)
-                # TODO: why is .contiguous() necessary: because of torch.where()
-                loss = cross_ent(perm.contiguous().view(output.size(0) * k, output.size(1)),
-                                 target.contiguous().view(output.size(0) * k))
-                loss = loss.mean()  # Average CrossEntLoss per slice per row
+                # # Using ranking loss (0 unmasked): comment this out and uncomment bit below for normal training.
+                # # Mask out rows that don't have true computed targets: these now include rows that are 0
+                # target = torch.where(loss_mask.byte(), target, -1e3 * torch.ones_like(target))
+                # target = torch.argsort(target, dim=1, descending=True)[:, :k]
+                # output = torch.where(loss_mask.byte(), output, -1e3 * torch.ones_like(output))
+                # # batch x res x res (first res dim indexes the sorting, second indexes the rows)
+                # # E.g. perm[0][i][j] gives the probabilities that the row in kspace at index j is the i'th best row.
+                # perm = sorter(output)  # Differentiable sorter (softmax output)
+                # perm = perm[:, :k, :]  # Only compare the k rows we computed targets for
+                # # TODO: Implement efficient loss function that immediately works with softmax output
+                # # sorter is already softmax output. If we want to use CELoss we need to transform them to logits first
+                # perm = torch.log(perm + 1e-7)
+                # # TODO: why is .contiguous() necessary: because of torch.where()
+                # loss = cross_ent(perm.contiguous().view(output.size(0) * k, output.size(1)),
+                #                  target.contiguous().view(output.size(0) * k))
+                # loss = loss.mean()  # Average CrossEntLoss per slice per row
 
                 # Normal loss
-                # loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
-                # # loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
-                # loss = loss.sum(dim=1).mean() / loss_mask[0].sum()  # there are loss_mask[0].sum() targets per slice
+                loss = l1_loss_gradfixed(output, target, reduction='none')  # TODO: Think about loss function
+                # loss = huber_loss(output, target, reduction='none')  # TODO: Think about loss function
+                loss = loss.sum(dim=1).mean() / loss_mask[0].sum()  # there are loss_mask[0].sum() targets per slice
 
                 # optimiser.zero_grad()
                 loss.backward()

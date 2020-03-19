@@ -478,6 +478,9 @@ def main(args):
     # logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     # logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
+    dev_ssims, _ = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
+    dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+    logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k)
