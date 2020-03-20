@@ -123,7 +123,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     cross_ent = CrossEntropyLoss(reduction='none')
     fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
     k = int(fk)
-    logging.info('train k: {:.2f} -> {}'.format(fk, k))
+    # logging.info('train k: {:.2f} -> {}'.format(fk, k))
 
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -207,20 +207,21 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         if args.verbose >= 3:
             logging.info('Time to train single batch of size {} for {} steps: {:.3f}'.format(
                 args.batch_size, args.acquisition_steps, time.perf_counter() - at))
-        if it % args.report_interval == 0:
-            if it == 0:
-                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l)
-                                      for i, l in enumerate(report_loss)])
-            else:
-                loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l) for i, l in enumerate(report_loss)])
-            logging.info(
-                f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
-                f'Iter = [{it:4d}/{len(train_loader):4d}], '
-                f'Time = {time.perf_counter() - start_iter:.2f}s, '
-                f'Avg Loss per step = [{loss_str}] ',
-            )
+        if args.verbose >= 1:
+            if it % args.report_interval == 0:
+                if it == 0:
+                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l)
+                                          for i, l in enumerate(report_loss)])
+                else:
+                    loss_str = ", ".join(["{}: {:.2f}".format(i + 1, l) for i, l in enumerate(report_loss)])
+                logging.info(
+                    f'Epoch = [{epoch:3d}/{args.num_epochs:3d}], '
+                    f'Iter = [{it:4d}/{len(train_loader):4d}], '
+                    f'Time = {time.perf_counter() - start_iter:.2f}s, '
+                    f'Avg Loss per step = [{loss_str}] ',
+                )
 
-            report_loss = [0. for _ in range(args.acquisition_steps)]
+                report_loss = [0. for _ in range(args.acquisition_steps)]
 
         start_iter = time.perf_counter()
 
@@ -256,7 +257,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter
     cross_ent = CrossEntropyLoss(reduction='none')
     fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
     k = int(fk)
-    logging.info('dev k: {:.2f} -> {}'.format(fk, k))
+    # logging.info('dev k: {:.2f} -> {}'.format(fk, k))
 
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     start_epoch = time.perf_counter()
@@ -507,9 +508,10 @@ def main(args):
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
 
     # TODO: remove this
-    # first_batch = next(iter(train_loader))
-    # train_loader = [first_batch] * 10
-    # dev_loader = [first_batch]
+    train_batch = next(iter(train_loader))
+    train_loader = [train_batch] * 10
+    dev_batch = next(iter(dev_loader))
+    dev_loader = [dev_batch] * 1
 
     if args.scheduler_type == 'step':
         scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
@@ -522,6 +524,12 @@ def main(args):
 
     # Training and evaluation
     k = args.num_target_rows
+
+    if args.do_train_ssim:
+        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer)
+        train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+        logging.info(f'TrainSSIM = [{train_ssims_str}]')
+        logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
 
     dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
     dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
@@ -559,13 +567,22 @@ def main(args):
             dev_loss = 0
             dev_loss_time = 0
 
-        dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
         logging.info(
-            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
-            f'DevLoss = {dev_loss:.3g} TrainTime = {train_time:.2f}s '
-            f'DevLossTime = {dev_loss_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
+            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
+
+        if args.do_train_ssim:
+            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer)
+            train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+            logging.info(f'TrainSSIM = [{train_ssims_str}]')
+        else:
+            train_ssim_time = 0
+
+        dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+        logging.info(f'TrainTime = {train_time:.2f}s DevLossTime = {dev_loss_time:.2f}s '
+                     f'TrainSSIMTime = {train_ssim_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s')
+
         save_model(args, args.run_dir, epoch, model, optimiser, None, False)
     writer.close()
 
@@ -692,6 +709,8 @@ def create_arg_parser():
     parser.add_argument('--do-dev-loss', action='store_true',
                         help='Whether to compute dev loss during training (generally takes ~1/5th of train time.'
                              'Not to be confused with SSIM evaluation, which is always done.')
+    parser.add_argument('--do-train-ssim', action='store_true',
+                        help='Whether to compute SSIM values on training data.')
     parser.add_argument('--verbose', type=int, default=1,
                         help='Set verbosity level. Lowest=0, highest=4."')
 
