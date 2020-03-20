@@ -505,9 +505,10 @@ def main(args):
                 logging.info(p.shape, p.numel())
 
     # Create data loaders
-    train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
+    train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=False)
 
     # TODO: remove this
+    # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
     train_batch = next(iter(train_loader))
     train_loader = [train_batch] * 10
     dev_batch = next(iter(dev_loader))
@@ -743,5 +744,5 @@ if __name__ == '__main__':
             wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
-    # torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.enabled = False
     main(args)

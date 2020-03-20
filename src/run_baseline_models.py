@@ -73,6 +73,52 @@ def get_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, re
     return target
 
 
+def get_spectral_dist(args, gt, recon, mask):
+    # Using kspace obtained from gt here instead of original kspace, since these might differ due to
+    # complex abs and normalisation of original kspace.
+    # shape = batch x 1 x res x res x 2
+    k_gt = transforms.rfft2(gt)
+    k_recon = transforms.rfft2(recon)
+
+    # shape = batch x res
+    shaped_mask = mask.view(gt.size(0), gt.size(3))
+    # shape = batch x num_unacquired_rows
+    unacq_rows = [(row_mask == 0).nonzero().flatten() for row_mask in shaped_mask]
+
+    # shape = batch x num_unacq_rows x res x res x 2
+    masked_k_gt = torch.zeros(len(unacq_rows), len(unacq_rows[0]), gt.size(2), gt.size(3), 2).to(args.device)
+    masked_k_recon = torch.zeros(len(unacq_rows), len(unacq_rows[0]), gt.size(2), gt.size(3), 2).to(args.device)
+    # Loop over slices in batch
+    for sl, rows in enumerate(unacq_rows):
+        # Loop over indices to acquire
+        for index, row in enumerate(rows):
+            masked_k_gt[sl, index, :, row.item(), :] = k_gt[sl, 0, :, row.item(), :]
+            masked_k_recon[sl, index, :, row.item(), :] = k_recon[sl, 0, :, row.item(), :]
+
+    spectral_gt = transforms.ifft2(masked_k_gt)
+    spectral_recon = transforms.ifft2(masked_k_recon)
+
+    # Gamma doesn't matter since we're not training and distance are monotonic in squared_norm.
+    # We set it so that distances are scaled nicely for our own inspection (also so that not multiple rows get
+    # scores of 1 due to machine precision).
+    # Currently chosen empirically such that gamma * squared_norm has values ranging from 0.1 to 10.
+    gamma = 0.05
+    # shape = batch x num_unacq_rows
+    squared_norm = torch.sum((spectral_gt - spectral_recon) ** 2, dim=(2, 3, 4))
+    closeness = torch.exp(-1 * gamma * squared_norm)
+    # we pick the row with the highest score, which should be the row with the largest distance
+    distance = 1 - closeness
+
+    # shape = batch x res
+    target = torch.zeros((gt.size(0), gt.size(3))).to(args.device)
+    for j, rows in enumerate(unacq_rows):
+        kspace_row_inds, permuted_inds = rows.sort()
+        # permuted_inds here is just a list of indices [ 0, ..., len(rows) = len(unacq_rows[0]) ]
+        target[j, kspace_row_inds] = distance[j, permuted_inds]
+
+    return target
+
+
 def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
     zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
     # Don't forget to change mask for impro_model (necessary if impro model uses mask)
@@ -261,6 +307,12 @@ def run_oracle(args, recon_model, dev_loader):
                     output = torch.randn((mask.size(0), mask.size(-2)))
                     output[:, acquired] = 0.
                     output = output.to(args.device)
+                elif args.model_type == 'spectral':
+                    # K-space similarity model proxy from Zhang et al. (2019)
+                    # Instead of training an evaluator to determine kspace distance, we calculate ground truth
+                    # kspace distances between the reconstruction and ground truth dev data, using the same distance
+                    # metric. This is then used to guide acquisitions.
+                    output = get_spectral_dist(args, gt, recon, mask)
 
                 epoch_outputs[step + 1].append(output.to('cpu').numpy())
                 # Greedy policy (size = batch)
@@ -322,8 +374,15 @@ def main(args):
     if args.model_type == 'oracle_average':
         oracle_dev_ssims, oracle_time = run_average_oracle(args, recon_model)
     else:
-        # Create data loader
-        _, dev_loader, _, _ = create_data_loaders(args)
+        # Create data loaders
+        train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=False)
+        # TODO: remove this
+        train_batch = next(iter(train_loader))
+        train_loader = [train_batch] * 1
+        dev_batch = next(iter(dev_loader))
+        dev_loader = [dev_batch] * 1
+        # dev_loader = train_loader
+
         oracle_dev_ssims, oracle_time = run_oracle(args, recon_model, dev_loader)
 
     dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_dev_ssims)])
@@ -354,7 +413,7 @@ def create_arg_parser():
                         help='Whether to use wandb logging for this run.')
 
     parser.add_argument('--model-type', choices=['center_sym', 'center_asym_left', 'center_asym_right',
-                                                 'random', 'oracle', 'oracle_average'], required=True,
+                                                 'random', 'oracle', 'oracle_average', 'spectral'], required=True,
                         help='Type of model to use.')
 
     # Data parameters
@@ -431,5 +490,5 @@ if __name__ == '__main__':
         wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
-    # torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.enabled = False
     main(args)

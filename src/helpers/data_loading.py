@@ -123,14 +123,14 @@ def create_datasets(args):
     return train_data, dev_data
 
 
-def create_data_loaders(args):
+def create_data_loaders(args, shuffle_train=True):
     train_data, dev_data = create_datasets(args)
     logging.info('Train slices: {}, Dev slices: {}'.format(len(train_data), len(dev_data)))
 
     train_loader = DataLoader(
         dataset=train_data,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=shuffle_train,
         num_workers=args.num_workers,
         pin_memory=True,
     )

@@ -55,4 +55,4 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fas
 --resolution 80 --num-pools 8 --of-which-four-pools 0 --num-chans 12 --batch-size 16 --impro-model-name convpool --num-epochs 100 \
 --fc-size 2048 --accelerations 8 --acquisition-steps 10 --report-interval 10 --num-target-rows 70 --lr 5e-5 --sample-rate 0.04 \
 --seed 42 --num-workers 8 --in-chans 1 --lr-gamma 0.1 --center-volume --start-eps 0.0 --tau 0.1 --tau-decay-rate 1 \
---wandb --scheduler-type step --lr-step-size 80 --acquisition CORPD_FBK --do-dev-loss --pool-stride 2 --do-train-ssim
+--wandb --scheduler-type step --lr-step-size 80 --acquisition CORPD_FBK --do-dev-loss --pool-stride 2 --do-train-ssim --verbose 0
