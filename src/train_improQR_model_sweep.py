@@ -462,7 +462,7 @@ def main(args):
     writer = SummaryWriter(log_dir=args.run_dir / 'summary')
 
     # Create data loaders
-    train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=False)
+    train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
 

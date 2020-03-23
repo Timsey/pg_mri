@@ -505,7 +505,7 @@ def main(args):
                 logging.info(p.shape, p.numel())
 
     # Create data loaders
-    train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=False)
+    train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
 
     # TODO: remove this
     # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
