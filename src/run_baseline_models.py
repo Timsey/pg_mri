@@ -490,5 +490,5 @@ if __name__ == '__main__':
         wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
-    torch.backends.cudnn.enabled = False
+    # torch.backends.cudnn.enabled = False
     main(args)

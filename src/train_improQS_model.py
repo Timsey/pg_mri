@@ -509,10 +509,10 @@ def main(args):
 
     # TODO: remove this
     # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
-    train_batch = next(iter(train_loader))
-    train_loader = [train_batch] * 10
-    dev_batch = next(iter(dev_loader))
-    dev_loader = [dev_batch] * 1
+    # train_batch = next(iter(train_loader))
+    # train_loader = [train_batch] * 10
+    # dev_batch = next(iter(dev_loader))
+    # dev_loader = [dev_batch] * 1
 
     if args.scheduler_type == 'step':
         scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
@@ -744,5 +744,5 @@ if __name__ == '__main__':
             wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
-    torch.backends.cudnn.enabled = False
+    # torch.backends.cudnn.enabled = False
     main(args)

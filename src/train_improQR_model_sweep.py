@@ -321,7 +321,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                                                                          recon_model)
 
         if args.wandb:
-            wandb.log({'val_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
+            wandb.log({'dev_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
         for step, loss in enumerate(epoch_loss):
             writer.add_scalar('DevLoss_step{}'.format(step), loss, epoch)
     return np.mean(epoch_loss), time.perf_counter() - start
@@ -462,38 +462,53 @@ def main(args):
     writer = SummaryWriter(log_dir=args.run_dir / 'summary')
 
     # Create data loaders
-    train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args)
+    train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=False)
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
 
     # Training and evaluation
     k = args.num_target_rows
 
-    # first_batch = next(iter(train_loader))
-    # train_loader = [first_batch] * 10
-    # dev_loader = [first_batch]
+    # TODO: remove this
+    # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
+    # train_batch = next(iter(train_loader))
+    # train_loader = [train_batch] * 10
+    # dev_batch = next(iter(dev_loader))
+    # dev_loader = [dev_batch] * 1
 
-    # dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
-    # dev_ssims_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_ssims)])
-    # logging.info(f'  DevSSIM = [{dev_ssims_str}]')
-    # logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+    if args.do_train_ssim:
+        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer)
+        train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+        logging.info(f'TrainSSIM = [{train_ssims_str}]')
+        logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
 
-    dev_ssims, _ = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
+    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
     dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+    logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k)
-        dev_loss, dev_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
+        dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
         dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
 
-        dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
         logging.info(
-            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} '
-            f'DevLoss = {dev_loss:.3g} TrainTime = {train_time:.2f}s '
-            f'DevTime = {dev_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s',
+            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
+
+        if args.do_train_ssim:
+            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer)
+            train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+            logging.info(f'TrainSSIM = [{train_ssims_str}]')
+        else:
+            train_ssim_time = 0
+
+        dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+        logging.info(f'TrainTime = {train_time:.2f}s DevLossTime = {dev_loss_time:.2f}s '
+                     f'TrainSSIMTime = {train_ssim_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s')
+
         save_model(args, args.run_dir, epoch, model, optimiser, None, False)
     writer.close()
 
@@ -551,6 +566,7 @@ def create_arg_parser():
     parser.add_argument('--weight-decay', type=float, default=0,
                         help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
                         'are not updated every step (since we select certain targets only); FIX THIS.')
+    parser.add_argument('--pool-stride', default=1, type=int, help='Each how many layers to do max pooling.')
 
     # Bools
     parser.add_argument('--use-sensitivity', type=str2bool, default=False,
@@ -560,6 +576,8 @@ def create_arg_parser():
                              'removes the most noisy images from the data.')
     parser.add_argument('--data-parallel', type=str2bool, default=True,
                         help='If set, use multiple GPUs using data parallelism')
+    parser.add_argument('--do-train-ssim', type=str2bool, default=True,
+                        help='Whether to compute SSIM values on training data.')
 
     # Sweep params
     parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
