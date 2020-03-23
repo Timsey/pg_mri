@@ -327,7 +327,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
     return np.mean(epoch_loss), time.perf_counter() - start
 
 
-def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
+def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     """
     Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
     """
@@ -407,17 +407,22 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer):
             ssims += np.array(batch_ssims)
 
     ssims /= tbs
-    for step in range(args.acquisition_steps):
-        outputs[epoch][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
-    save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
 
-    for step, val in enumerate(ssims):
-        writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
+    if not train:
+        for step in range(args.acquisition_steps):
+            outputs[epoch][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
+        save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
 
-    if args.wandb:
-        wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
-        wandb.log({'val_ssims.10': ssims[-1]}, step=epoch + 1)
-        wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
+        for step, val in enumerate(ssims):
+            writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
+
+        if args.wandb:
+            wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+            wandb.log({'val_ssims.10': ssims[-1]}, step=epoch + 1)
+            wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
+    else:
+        if args.wandb:
+            wandb.log({'train_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
 
     return ssims, time.perf_counter() - start
 
@@ -477,12 +482,12 @@ def main(args):
     # dev_loader = [dev_batch] * 1
 
     if args.do_train_ssim:
-        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer)
+        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
         train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
         logging.info(f'TrainSSIM = [{train_ssims_str}]')
         logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
 
-    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer)
+    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer, False)
     dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
@@ -491,14 +496,14 @@ def main(args):
         scheduler.step(epoch)
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k)
         dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
-        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer)
+        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, False)
 
         logging.info(
             f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
 
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer)
+            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer, False)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
         else:
