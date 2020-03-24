@@ -503,7 +503,7 @@ def main(args):
         )
 
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer, False)
+            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer, True)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
         else:
@@ -634,4 +634,5 @@ if __name__ == '__main__':
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False
+    print('go')
     main(args)
