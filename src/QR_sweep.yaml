@@ -9,7 +9,7 @@ parameters:
   fc-size:
     values: [256, 512, 1024]
   in-chans:
-    values: [1, 2]
+    values: [1]
   num-pools:
     values: [3, 4]
   lr-gamma:
