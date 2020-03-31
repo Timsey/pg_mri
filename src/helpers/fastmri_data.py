@@ -112,6 +112,7 @@ class DataTransform:
         Changed from original by mapping kspace onto 320x320 size and normalising based on the real valued images,
          before applying mask, for AL consistency.
         """
+        # Note: abs(crop(ifft2(kspace))) == target (errors of order 1/500 of minimum value in either image)
         kspace = transforms.to_tensor(kspace)
         seed = None if not self.use_seed else tuple(map(ord, fname))
         kspace = self.fix_kspace(kspace)  # We need this for Active Learning
@@ -122,7 +123,7 @@ class DataTransform:
         # TODO: Take real part or complex abs here?
         zf = transforms.complex_abs(zf)
         # Normalize input
-        zf, mean, std = transforms.normalize_instance(zf, eps=1e-11)
+        zf, zf_mean, zf_std = transforms.normalize_instance(zf, eps=1e-11)
         zf = zf.clamp(-6, 6)
 
         target = transforms.to_tensor(target)
@@ -130,11 +131,12 @@ class DataTransform:
         target = transforms.center_crop(target, (self.resolution, self.resolution))
         # # Normalize target
         # target = transforms.normalize(target, mean, std, eps=1e-11)
-        # target = target.clamp(-6, 6)
+        target, gt_mean, gt_std = transforms.normalize_instance(target, eps=1e-11)
+        target = target.clamp(-6, 6)
 
         # Need to return kspace and mask information when doing active learning, since we are
         # acquiring frequencies and updating the mask for a data point during an AL loop.
-        return kspace, masked_kspace, mask, zf, target, mean, std, fname, slice
+        return kspace, masked_kspace, mask, zf, target, gt_mean, gt_std, fname, slice  # , zf_mean, zf_std
 
     def fix_kspace(self, kspace):
         """
@@ -155,9 +157,10 @@ class DataTransform:
         # Crop input image to get correctly sized kspace
         image = transforms.complex_center_crop(image, (self.resolution, self.resolution))
         # Take complex abs to get a real image
-        image = transforms.complex_abs(image)
+        # image = transforms.complex_abs(image)
         # rfft this image to get the kspace that will be used in active learning
-        kspace = transforms.rfft2(image)
+        # kspace = transforms.rfft2(image)
+        kspace = transforms.fft2(image)
         return kspace
 
 

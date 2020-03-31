@@ -94,7 +94,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     epoch_target_counts = defaultdict(lambda: 0)
 
     for it, data in enumerate(train_loader):
-        kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -103,8 +103,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # shape after unsqueeze = batch x channel x columns x rows
         zf = zf.unsqueeze(1).to(args.device)
         gt = gt.unsqueeze(1).to(args.device)
-        gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
-        gt = gt.clamp(-6, 6)
+        gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+        gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         unnorm_gt = gt * gt_std + gt_mean
         data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
@@ -259,7 +259,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
 
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
+            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
             # TODO: Maybe normalisation unnecessary for SSIM target?
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
@@ -268,8 +268,8 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
             # shape after unsqueeze = batch x channel x columns x rows
             zf = zf.unsqueeze(1).to(args.device)
             gt = gt.unsqueeze(1).to(args.device)
-            gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
-            gt = gt.clamp(-6, 6)
+            gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+            gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             unnorm_gt = gt * gt_std + gt_mean
             data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
@@ -343,8 +343,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     start = time.perf_counter()
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, _, _, fname, slices = data
-            tbs += mask.size(0)
+            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+            # TODO: Maybe normalisation unnecessary for SSIM target?
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
             masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
@@ -352,10 +352,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
             # shape after unsqueeze = batch x channel x columns x rows
             zf = zf.unsqueeze(1).to(args.device)
             gt = gt.unsqueeze(1).to(args.device)
-            gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
-            gt = gt.clamp(-6, 6)
+            gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+            gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             unnorm_gt = gt * gt_std + gt_mean
             data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+
+            tbs += mask.size(0)
 
             # Base reconstruction model forward pass
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -499,7 +501,7 @@ def main(args):
         dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, False)
 
         logging.info(
-            f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
+            f'Epoch = [{epoch:3d}/{args.num_epochs:3d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
 
         if args.do_train_ssim:
@@ -533,17 +535,17 @@ def create_arg_parser():
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path,
-                        default='/var/scratch/tbbakker/fastMRI-shi/models/unet/al_gauss_res80_8to4in2_PD_cvol/model.pt',
+                        default='/var/scratch/tbbakker/fastMRI-shi/models/unet/al_nounc_res80_8to4in2_PD_cvol_ch16_b64_wd1em2/model.pt',
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
-    parser.add_argument('--recon-model-name', default='kengal_gauss',
+    parser.add_argument('--recon-model-name', default='nounc',
                         help='Reconstruction model name corresponding to model checkpoint.')
     parser.add_argument('--impro-model-name', default='convpool',
                         help='Improvement model name (if using resume, must correspond to model at the '
                         'improvement model checkpoint.')
     parser.add_argument('--num-target-rows', type=int, default=10, help='Number of rows to compute ground truth '
                         'targets for every update step.')
-    parser.add_argument('--report-interval', type=int, default=10, help='Period of loss reporting')
+    parser.add_argument('--report-interval', type=int, default=100, help='Period of loss reporting')
     parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Which device to train on. Set to "cuda" to use the GPU')
@@ -634,5 +636,5 @@ if __name__ == '__main__':
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False
-    print('go')
+
     main(args)

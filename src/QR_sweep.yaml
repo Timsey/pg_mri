@@ -5,19 +5,21 @@ metric:
   goal: maximize
 parameters:
   lr:
-    values: [0.001, 0.0005, 0.0001, 0.00005]
+    values: [0.0001, 0.00005]
   fc-size:
-    values: [256]
+    values: [256, 512, 1024]
   in-chans:
     values: [1, 2]
+  num-pools:
+    values: [3, 4]
   lr-gamma:
     values: [0.1, 0.2, 0.5]
   num-chans:
-    values: [16]
+    values: [12, 16, 24, 32]
   batch-size:
     values: [8, 16]
   num-epochs:
-    values: [20, 30, 40, 50]
+    values: [50]
   lr-step-size:
     values: [10, 20, 30, 40]
 #early_terminate:

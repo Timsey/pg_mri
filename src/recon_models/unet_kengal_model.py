@@ -135,3 +135,14 @@ def build_kengal_model(recon_args, args):
         drop_prob=recon_args.drop_prob
     ).to(args.device)
     return kengal_model
+
+
+def build_nounc_model(recon_args, args):
+    kengal_model = UnetModel(
+        in_chans=1,
+        out_chans=1,
+        chans=recon_args.num_chans,
+        num_pool_layers=recon_args.num_pools,
+        drop_prob=recon_args.drop_prob
+    ).to(args.device)
+    return kengal_model

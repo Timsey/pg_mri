@@ -2,7 +2,7 @@ import torch
 from torch.distributions import Normal, Laplace
 
 from src.helpers import transforms
-from src.recon_models.unet_kengal_model import build_kengal_model
+from src.recon_models.unet_kengal_model import build_kengal_model, build_nounc_model
 
 
 def compute_sensitivity(args, recon_output, loc, logscale):
@@ -72,7 +72,7 @@ def create_impro_model_input(args, recon_model, zf, mask):
 
 def recon_model_forward_pass(args, recon_model, zf):
     model_name = args.recon_model_name
-    if model_name in ['kengal_laplace', 'kengal_gauss']:
+    if model_name in ['kengal_laplace', 'kengal_gauss', 'nounc']:
         output = recon_model(zf)
     elif model_name == 'zero_filled':
         output = zf
@@ -108,6 +108,8 @@ def build_recon_model(recon_args, args):
     model_name = args.recon_model_name
     if model_name in ['kengal_laplace', 'kengal_gauss']:
         recon_model = build_kengal_model(recon_args, args)
+    elif model_name == 'nounc':
+        recon_model = build_nounc_model(recon_args, args)
     else:
         raise ValueError("Recon model name {} is not a valid option.".format(model_name))
     return recon_model

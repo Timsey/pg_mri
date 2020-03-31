@@ -121,9 +121,12 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     # TODO: try batchnorm in FC layers
     model.train()
     cross_ent = CrossEntropyLoss(reduction='none')
-    fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
+    # TODO: make factor 5? Reaches 2 from 70 at epoch 35 (currently 43), then has enough to fine-tune.
+    #  Or use proper exp decay scaling:  exp( ln(start_k) + (epoch + 1) / num_epochs * (ln(end_k) - ln(start_k)) )
+    # fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
+    fk = max(2, math.ceil(np.exp(np.log(k) - np.log(k) * epoch / (args.num_epochs - 1)) - 1e-5))
     k = int(fk)
-    # logging.info('train k: {:.2f} -> {}'.format(fk, k))
+    logging.info('train k: {:.2f} -> {}'.format(fk, k))
 
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -134,7 +137,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     epoch_target_counts = defaultdict(lambda: 0)
 
     for it, data in enumerate(train_loader):
-        kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -143,8 +146,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         # shape after unsqueeze = batch x channel x columns x rows
         zf = zf.unsqueeze(1).to(args.device)
         gt = gt.unsqueeze(1).to(args.device)
-        gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
-        gt = gt.clamp(-6, 6)
+        gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+        gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         unnorm_gt = gt * gt_std + gt_mean
         data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
@@ -255,16 +258,19 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter
     # TODO: try batchnorm in FC layers
     model.eval()
     cross_ent = CrossEntropyLoss(reduction='none')
-    fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
+    # TODO: make factor 5? Reaches 2 from 70 at epoch 35 (currently 43), then has enough to fine-tune.
+    #  Or use proper exp decay scaling:  exp( ln(start_k) + (epoch + 1) / num_epochs * (ln(end_k) - ln(start_k)) )
+    # fk = max(2, math.ceil(np.exp(np.log(k) - 4 * epoch / args.num_epochs) - 1e-5))
+    fk = max(2, math.ceil(np.exp(np.log(k) - np.log(k) * epoch / (args.num_epochs - 1)) - 1e-5))
     k = int(fk)
-    # logging.info('dev k: {:.2f} -> {}'.format(fk, k))
+    logging.info('dev k: {:.2f} -> {}'.format(fk, k))
 
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     start_epoch = time.perf_counter()
     global_step = epoch * len(dev_loader)
 
     for it, data in enumerate(dev_loader):
-        kspace, masked_kspace, mask, zf, gt, _, _, _, _ = data
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -273,8 +279,8 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter
         # shape after unsqueeze = batch x channel x columns x rows
         zf = zf.unsqueeze(1).to(args.device)
         gt = gt.unsqueeze(1).to(args.device)
-        gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
-        gt = gt.clamp(-6, 6)
+        gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+        gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         unnorm_gt = gt * gt_std + gt_mean
         data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
 
@@ -345,8 +351,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     start = time.perf_counter()
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, _, _, fname, slices = data
-            tbs += mask.size(0)
+            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+            # TODO: Maybe normalisation unnecessary for SSIM target?
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
             masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
@@ -354,10 +360,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
             # shape after unsqueeze = batch x channel x columns x rows
             zf = zf.unsqueeze(1).to(args.device)
             gt = gt.unsqueeze(1).to(args.device)
-            gt, gt_mean, gt_std = transforms.normalize(gt, dims=(-1, -2), eps=1e-11)
-            gt = gt.clamp(-6, 6)
+            gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+            gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             unnorm_gt = gt * gt_std + gt_mean
             data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+
+            tbs += mask.size(0)
 
             # Base reconstruction model forward pass
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -616,8 +624,8 @@ def create_arg_parser():
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, default=None,
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
-    parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'kengal_gauss', 'zero_filled'], required=True,
-                        help='Reconstruction model name corresponding to model checkpoint.')
+    parser.add_argument('--recon-model-name', choices=['kengal_laplace', 'kengal_gauss', 'zero_filled', 'nounc'],
+                        required=True, help='Reconstruction model name corresponding to model checkpoint.')
     parser.add_argument('--use-sensitivity',  action='store_true',
                         help='Whether to use reconstruction model sensitivity as input to the improvement model.')
     parser.add_argument('--num-sens-samples', type=int, default=10,

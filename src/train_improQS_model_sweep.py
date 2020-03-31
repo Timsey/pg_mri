@@ -418,7 +418,7 @@ def create_arg_parser():
                         default='/var/scratch/tbbakker/fastMRI-shi/models/unet/al_gauss_res80_8to4in2_PD_cvol/model.pt',
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
-    parser.add_argument('--recon-model-name', default='kengal_gauss',
+    parser.add_argument('--recon-model-name', default='nounc',
                         help='Reconstruction model name corresponding to model checkpoint.')
     parser.add_argument('--impro-model-name', default='convpool',
                         help='Improvement model name (if using resume, must correspond to model at the '

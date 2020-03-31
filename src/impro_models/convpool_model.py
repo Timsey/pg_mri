@@ -100,12 +100,12 @@ class ConvPoolModel(nn.Module):
             nn.Linear(in_features=self.flattened_size, out_features=self.fc_size),
             # nn.BatchNorm1d(num_features=1024),
             nn.LeakyReLU(),
-            # nn.Linear(in_features=self.fc_size, out_features=self.fc_size),
-            nn.Linear(in_features=self.fc_size, out_features=self.fc_size // 4),
+            nn.Linear(in_features=self.fc_size, out_features=self.fc_size),
+            # nn.Linear(in_features=self.fc_size, out_features=self.fc_size // 4),
             # nn.BatchNorm1d(num_features=512),
             nn.LeakyReLU(),
-            # nn.Linear(in_features=self.fc_size, out_features=resolution)
-            nn.Linear(in_features=self.fc_size // 4, out_features=resolution)
+            nn.Linear(in_features=self.fc_size, out_features=resolution)
+            # nn.Linear(in_features=self.fc_size // 4, out_features=resolution)
         )
 
     def forward(self, image):
