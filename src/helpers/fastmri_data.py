@@ -157,10 +157,10 @@ class DataTransform:
         # Crop input image to get correctly sized kspace
         image = transforms.complex_center_crop(image, (self.resolution, self.resolution))
         # Take complex abs to get a real image
-        # image = transforms.complex_abs(image)
+        image = transforms.complex_abs(image)
         # rfft this image to get the kspace that will be used in active learning
-        # kspace = transforms.rfft2(image)
-        kspace = transforms.fft2(image)
+        kspace = transforms.rfft2(image)
+        # kspace = transforms.fft2(image)
         return kspace
 
 
