@@ -156,12 +156,13 @@ class DataTransform:
         image = transforms.ifft2(kspace)
         # Crop input image to get correctly sized kspace
         image = transforms.complex_center_crop(image, (self.resolution, self.resolution))
+        kspace = transforms.fft2(image)
         # Take complex abs to get a real image
         image = transforms.complex_abs(image)
         # rfft this image to get the kspace that will be used in active learning
-        kspace = transforms.rfft2(image)
+        rkspace = transforms.rfft2(image)
         # kspace = transforms.fft2(image)
-        return kspace
+        return rkspace
 
 
 def create_fastmri_datasets(args, train_mask, dev_mask):
