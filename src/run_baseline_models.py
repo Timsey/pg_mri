@@ -273,6 +273,11 @@ def run_oracle(args, recon_model, dev_loader):
             gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             unnorm_gt = gt * gt_std + gt_mean
             data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            # TODO: Dynamic (data) range has strong influence on SSIM score.
+            #  The max of gt seems to be the fair metric (although it should be taken over a volume to really
+            #  be the dynamic range).
+            # data_range = gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            # data_range = 10
 
             tbs += mask.size(0)
 
@@ -282,6 +287,8 @@ def run_oracle(args, recon_model, dev_loader):
             unnorm_recon = recon[:, 0:1, :, :] * gt_std + gt_mean
             init_ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
                                  data_range=data_range).mean(dim=(-1, -2)).sum()
+            # init_ssim_val = ssim(recon[:, 0:1, :, :], gt, size_average=False,
+            #                      data_range=data_range).mean(dim=(-1, -2)).sum()
 
             batch_ssims = [init_ssim_val.item()]
 
@@ -333,6 +340,8 @@ def run_oracle(args, recon_model, dev_loader):
                 # shape = 1
                 ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
                                 data_range=data_range).mean(dim=(-1, -2)).sum()
+                # ssim_val = ssim(impro_input[:, 0:1, :, :], gt, size_average=False,
+                #                 data_range=data_range).mean(dim=(-1, -2)).sum()
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
 

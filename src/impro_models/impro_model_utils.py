@@ -9,6 +9,7 @@ from .maskconv_model import build_impro_maskconv_model
 from .convpoolmaskconv_model import build_impro_convpoolmaskconv_model
 from .location_model import build_impro_location_model
 from .multimaskconv_model import build_impro_multimaskconv_model
+from ..helpers.elioptim import EliOptimizer
 
 
 def impro_model_forward_pass(args, impro_model, channels, mask):
@@ -111,6 +112,7 @@ def build_impro_model(args):
 
 def build_optim(args, params):
     optimiser = torch.optim.Adam(params, args.lr, weight_decay=args.weight_decay)
+    # optimiser = EliOptimizer(params, lr=args.lr)
     # optimiser = torch.optim.SGD(params, args.lr, momentum=.9)
     # optimiser = torch.optim.RMSprop(params, args.lr, weight_decay=args.weight_decay)
     return optimiser

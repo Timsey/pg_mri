@@ -62,6 +62,8 @@
       <w>pytorch</w>
       <w>randrow</w>
       <w>randrows</w>
+      <w>raphson</w>
+      <w>regularizer</w>
       <w>rfft</w>
       <w>rkspace</w>
       <w>savestr</w>
@@ -74,6 +76,7 @@
       <w>tbakker</w>
       <w>tbbakker</w>
       <w>timsey</w>
+      <w>tmin</w>
       <w>topk</w>
       <w>unacq</w>
       <w>unacquired</w>
