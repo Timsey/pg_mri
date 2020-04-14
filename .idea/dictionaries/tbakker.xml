@@ -37,6 +37,7 @@
       <w>kspace</w>
       <w>kspaces</w>
       <w>logits</w>
+      <w>logprob</w>
       <w>logprobs</w>
       <w>logscale</w>
       <w>logvarenc</w>

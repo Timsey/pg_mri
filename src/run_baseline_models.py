@@ -416,7 +416,7 @@ def main(args):
             logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
         if args.wandb:
-            wandb.log({'val_ssims': {str(key): val for key, val in enumerate(oracle_dev_ssims)}}, step=epoch + 1)
+            wandb.log({'val_ssims': {str(key): val for key, val in enumerate(oracle_dev_ssims)}}, step=epoch)
     writer.close()
 
 
