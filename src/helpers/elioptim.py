@@ -10,13 +10,13 @@ class EliOptimizer(Optimizer):
     Saddle Free Newton Raphson, but also has low computational cost.
     Arguments:
         gamma: decay (default: 0.9)
-        lamb_1: dampening (default: 0.1)
-        lamb_2: regularizer (default: 1)
+        lamb_1: dampening (default: 0.5)
+        lamb_2: regularizer (default: 10)
         lr: learning rate (default: 1e-4)
         tmin: burn-in period (default: 30)
     """
 
-    def __init__(self, parameters, gamma=0.9, lamb_1=0.1, lamb_2=1, lr=1e-4, tmin=50):
+    def __init__(self, parameters, gamma=0.9, lamb_1=0.5, lamb_2=10, lr=1e-4, tmin=30):
         self.param_groups = []
         self.a_groups = []
         self.b_groups = []
@@ -56,11 +56,8 @@ class EliOptimizer(Optimizer):
             d.data = self.gamma * d.data + param.data * param.grad.data
             e.data = self.gamma * e.data + param.grad.data
 
-            if self.t == self.tmin:
-                print('Second order starts now.')
-
             if self.t < self.tmin:
                 param.data -= self.lr * param.grad.data
             else:
                 h = torch.abs((self.c * d - b * e) / (a * self.c - b**2 + self.eps))
-                param.data -= self.lamb_1 * param.grad.data / (h + self.lamb_2)
+                param.data -= self.lamb_1 * (e / self.c) / (h + self.lamb_2)

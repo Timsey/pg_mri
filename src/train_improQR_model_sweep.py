@@ -27,6 +27,7 @@ import sys
 # sys.path.insert(0, '/Users/tbakker/Projects/mrimpro/')  # noqa: F401
 sys.path.insert(0, '/var/scratch/tbbakker/mrimpro/')  # noqa: F401
 
+from src.helpers.gumbel import compute_log_R
 from src.helpers.torch_metrics import ssim
 from src.helpers.utils import add_mask_params, save_json, check_args_consistency
 from src.helpers.data_loading import create_data_loaders
@@ -41,6 +42,14 @@ logger = logging.getLogger(__name__)
 targets = defaultdict(lambda: defaultdict(lambda: 0))
 target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
+
+
+def reinforce_unordered(cost, log_p, baseline=True):
+    with torch.no_grad():  # Don't compute gradients for advantage and ratio
+        log_R_s, log_R_ss = compute_log_R(log_p)
+        bl_vals = ((log_p[:, None, :] + log_R_ss).exp() * cost[:, None, :]).sum(-1)
+        adv_B = cost - bl_vals if baseline else cost
+    return ((log_p + log_R_s).exp() * adv_B).sum(-1)
 
 
 def get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model, impro_input,
@@ -126,25 +135,16 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             # # TODO: this possibly samples non-allowed rows sometimes, which have prob ~ 0, and thus log prob -inf.
             # #  To fix this we'd need to restrict the categorical to only allowed rows, keeping track of the indices,
             # #  so that we correctly backpropagate the loss to the model.
+
+            # Also need this for sampling the next row at the end of this loop
             policy = torch.distributions.Categorical(probs)
-            # batch x k
-            actions = policy.sample((k,)).transpose(0, 1)  # TODO: DiCE estimator; differentiable sampling from policy?
-
-            # # Method for never getting already measured rows
-            # actions = torch.zeros(mask.size(0), k, dtype=torch.long).to(args.device)
-            # for i, sl_loss_mask in enumerate(loss_mask):
-            #     sl_mask_indices = sl_loss_mask.nonzero().flatten().long()
-            #     sl_logits = output[i, sl_mask_indices]
-            #     sl_probs = torch.nn.functional.softmax(sl_logits - torch.max(sl_logits, dim=0, keepdim=True)[0])
-            #     sl_policy = torch.distributions.Categorical(sl_probs)
-            #     sl_actions = sl_policy.sample((k,))
-            #     # Transform action indices to actual row indices
-            #     row_indices = sl_mask_indices[sl_actions]
-            #     actions[i, :] = row_indices
-
-            # for i, sl_ac in enumerate(actions):
-            #     for ac in sl_ac:
-            #         assert ac not in (loss_mask[i] == 0).nonzero().flatten()
+            if args.estimator == 'wr':
+                # batch x k
+                actions = policy.sample((k,)).transpose(0, 1)  # TODO: DiCE estimator; differentiable sampling?
+            elif args.estimator == 'wor':
+                actions = torch.multinomial(probs, k, replacement=False)
+            else:
+                raise ValueError(f'{args.estimator} is not a valid estimator.')
 
             # REINFORCE-like with baselines
             target = get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model,
@@ -156,49 +156,40 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             # batch x k
             action_logprobs = torch.log(torch.gather(probs, 1, actions))
             action_rewards = torch.gather(target, 1, actions)
-            # batch x 1
-            avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
-            # REINFORCE with self-baselines
-            # batch x k
-            loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
-            # batch x 1
-            loss = loss.sum(dim=1)
-            # 1 x 1
-            loss = loss.mean()
 
-            # if it == 3 and step == 0:
-            #     a = 10
+            if args.estimator == 'wr':
+                # With replacement
+                # batch x 1
+                avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
+                # REINFORCE with self-baselines
+                # batch x k
+                loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
+                # batch x 1
+                loss = loss.sum(dim=1)
+                # 1 x 1
+                loss = loss.mean()
+            elif args.estimator == 'wor':
+                # Without replacement
+                loss = reinforce_unordered(-1 * action_rewards, action_logprobs)
+                loss = loss.mean()
+            else:
+                raise ValueError(f'{args.estimator} is not a valid estimator.')
 
-            # loss = 0
-            # for i, sl_actions in enumerate(actions):
-            #     # TODO: Since we're sampling with replacement, we sometimes sample the same action twice for a given
-            #     #  slice. In order to not backprop the same sample twice, we only use uniquely sampled actions. In
-            #     #  expectation we still get unbiased gradients this way, but the expected  variance of our estimator
-            #     #  will be higher for slices for which we have fewer unique actions sampled.
-            #     #  A solution to this would be to sample without replacement, but the math for the corresponding
-            #     #  gradient estimator is more involved.
-            #
-            #     # TODO: More importantly, the model seems to collapse to a policy that only samples a single row
-            #     #  quite often. Dividing by len(actions) - 1 then leads to nans in the loss.
-            #     #  Maybe we shouldn't only use unique actions.
-            #     sl_actions = torch.unique(sl_actions)  # only use unique actions
-            #     sl_action_logprobs = torch.log(probs[i, sl_actions])  # get probs corresponding to slice and actions
-            #     sl_action_rewards = target[i, sl_actions]  # get rewards corresponding to slice and actions
-            #     sl_avg_reward = torch.mean(sl_action_rewards)  # baseline
-            #     sl_loss = (sl_action_logprobs * (sl_action_rewards - sl_avg_reward))  # REINFORCE with self-baseline
-            #     sl_loss = torch.sum(sl_loss) / (len(sl_actions) - 1)  # compensated average over action samples
-            #     loss += -1 * sl_loss / actions.size(0)  # divide by batch size
-
-            # optimiser.zero_grad()
             loss.backward()
-            # optimiser.step()
 
             epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
             report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
             writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
-            # Acquire row for next step: GREEDY
-            _, next_rows = torch.max(logits, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
+            if args.acq_strat == 'greedy':
+                # Acquire row for next step: GREEDY
+                _, next_rows = torch.max(logits, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
+            elif args.acq_strat == 'sample':
+                # Acquire next row by sampling
+                next_rows = policy.sample()
+            else:
+                raise ValueError(f'{args.acq_strat} is not a valid acquisition strategy')
+
             impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                      recon_model)
 
@@ -277,7 +268,6 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
 
             for step in range(args.acquisition_steps):
-                # TODO: Output nans?
                 output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
                 loss_mask = (mask == 0).squeeze().float()
 
@@ -290,9 +280,15 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
                 # TODO: this possibly samples non-allowed rows sometimes, which have prob ~ 0, and thus log prob -inf.
                 #  To fix this we'd need to restrict the categorical to only allowed rows, keeping track of the indices,
                 #  so that we correctly backpropagate the loss to the model.
+                # Also need this for sampling the next row at the end of this loop
                 policy = torch.distributions.Categorical(probs)
-                # batch x k
-                actions = policy.sample((k,)).transpose(0, 1)
+                if args.estimator == 'wr':
+                    # batch x k
+                    actions = policy.sample((k,)).transpose(0, 1)  # TODO: DiCE estimator; differentiable sampling?
+                elif args.estimator == 'wor':
+                    actions = torch.multinomial(probs, k, replacement=False)
+                else:
+                    raise ValueError(f'{args.estimator} is not a valid estimator.')
 
                 # REINFORCE-like with baselines
                 target = get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model,
@@ -315,8 +311,15 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
 
                 writer.add_scalar('DevLoss_step{}'.format(step), loss.item(), global_step + it)
 
-                # Acquire row for next step: GREEDY
-                _, next_rows = torch.max(logits, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
+                if args.acq_strat == 'greedy':
+                    # Acquire row for next step: GREEDY
+                    _, next_rows = torch.max(logits, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
+                elif args.acq_strat == 'sample':
+                    # Acquire next row by sampling
+                    next_rows = policy.sample()
+                else:
+                    raise ValueError(f'{args.acq_strat} is not a valid acquisition strategy')
+
                 impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
                                                                          recon_model)
 
@@ -372,19 +375,33 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
                 # Improvement model output
                 output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
                 epoch_outputs[step + 1].append(output.to('cpu').numpy())
-                # Greedy policy (size = batch)
-                # Only acquire rows that have not been already acquired
-                # TODO: Could just take the max of the masked output
-                _, topk_rows = torch.topk(output, args.resolution, dim=1)
-                unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
-                next_rows = []
-                for j, sl_topk_rows in enumerate(topk_rows):
-                    for row in sl_topk_rows:
-                        if row in unacquired[j, :].nonzero().flatten():
-                            next_rows.append(row)
-                            break
-                # TODO: moving to device should happen only once before both loops. Should just mutate object after
-                next_rows = torch.tensor(next_rows).long().to(args.device)
+
+                if args.acq_strat == 'greedy':
+                    # Greedy policy (size = batch)
+                    # Only acquire rows that have not been already acquired
+                    # TODO: Could just take the max of the masked output
+                    _, topk_rows = torch.topk(output, args.resolution, dim=1)
+                    unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
+                    next_rows = []
+                    for j, sl_topk_rows in enumerate(topk_rows):
+                        for row in sl_topk_rows:
+                            if row in unacquired[j, :].nonzero().flatten():
+                                next_rows.append(row)
+                                break
+                    # TODO: moving to device should happen only once before both loops. Should just mutate object after
+                    next_rows = torch.tensor(next_rows).long().to(args.device)
+                elif args.acq_strat == 'sample':
+                    # Acquire rows by sampling
+                    loss_mask = (mask == 0).squeeze().float()
+                    # Mask acquired rows
+                    logits = torch.where(loss_mask.byte(), output, -1e7 * torch.ones_like(output))
+                    # Softmax over 'logits' representing row scores
+                    probs = torch.nn.functional.softmax(logits - torch.max(logits, dim=1, keepdim=True)[0], dim=1)
+                    policy = torch.distributions.Categorical(probs)
+                    # batch x k
+                    next_rows = policy.sample()
+                else:
+                    raise ValueError(f'{args.acq_strat} is not a valid acquisition strategy')
 
                 # Acquire this row
                 impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
@@ -549,6 +566,12 @@ def create_arg_parser():
     parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Which device to train on. Set to "cuda" to use the GPU')
+
+    parser.add_argument('--estimator', type=str, default='wr',
+                        help='Which estimator to use: with replacement (wr), or without replacement (wor)')
+    parser.add_argument('--acq_strat', type=str, default='greedy',
+                        help='Which acquisition strategy to use: greedy or sample')
+
     parser.add_argument('--exp-dir', type=pathlib.Path, default='/var/scratch/tbbakker/mrimpro/sweep_results/',
                         help='Directory where model and results should be saved. Will create a timestamped folder '
                         'in provided directory each run')

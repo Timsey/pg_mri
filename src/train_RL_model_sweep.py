@@ -42,8 +42,27 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
-def get_policy_and_probs(output, unacquired):
-    # Reshape policy output such that we can use the same policy for different mask states
+def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, unnorm_gt, data_range):
+    batch_mk = masked_kspace.view(mask.size(0) * args.num_trajectories, 1, res, res, 2)
+    # Get new zf: shape = (batch . num_rows x 1 x res x res)
+    zf, _, _ = get_new_zf(batch_mk)
+    # Get new reconstruction
+    impro_input = create_impro_model_input(args, recon_model, zf, mask)
+    # shape = batch . k x 1 x res x res, extract reconstruction to compute target
+    recons = impro_input[:, 0:1, ...]
+    # shape = batch x k x res x res
+    recons = recons.view(mask.size(0), args.num_trajectories, res, res)
+    unnorm_recons = recons * gt_std + gt_mean
+    gt_exp = unnorm_gt.expand(-1, args.num_trajectories, -1, -1)
+    # scores = batch x k (channels), base_score = batch x 1
+    scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
+    return scores, impro_input
+
+
+def get_policy_probs(output, unacquired):
+    # Reshape policy output such that we can use the same policy for different shapes of acquired
+    # This should only be applied in the first acquisition step to initialise trajectories, since after that 'output'
+    # should have the shape of batch x num_trajectories x res already.
     if len(output.shape) != len(unacquired.shape):
         output = output.view(output.size(0), 1, output.size(-1))
         output = output.repeat(1, unacquired.size(1), 1)
@@ -51,8 +70,7 @@ def get_policy_and_probs(output, unacquired):
     logits = torch.where(unacquired.byte(), output, -1e7 * torch.ones_like(output))
     # Softmax over 'logits' representing row scores
     probs = torch.nn.functional.softmax(logits - torch.max(logits, dim=-1, keepdim=True)[0], dim=-1)
-    policy = torch.distributions.Categorical(probs)
-    return policy, probs
+    return probs
 
 
 def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k):
@@ -108,77 +126,99 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         reward_tensor = torch.zeros((mask.size(0), args.num_trajectories, args.acquisition_steps)).to(args.device)
 
         # Initial policy
-        output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
+        impro_output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
         unacquired = (mask == 0).squeeze().float()
-        policy, probs = get_policy_and_probs(output, unacquired)
+        probs = get_policy_probs(impro_output, unacquired)
 
         for step in range(args.acquisition_steps):
+            # Sample initial actions from policy: batch x k
+            if step == 0:
+                # Sampling without replacement
+                actions = torch.multinomial(probs, k, replacement=False)
+            else:  # Here policy has batch_shape = (batch x num_trajectories), so we just need a sample
+                # Since we're only taking a single sample per trajectory, this is 'without replacement'
+                policy = torch.distributions.Categorical(probs)
+                actions = policy.sample()
+
+            # Store actions and logprobs for later gradient estimation
+            action_tensor[:, :, step] = actions
+
+            if step == 0:
+                # Parallel sampling of multiple actions
+                # probs shape = (batch x res), actions shape = (batch, num_trajectories
+                logprobs = torch.log(torch.gather(probs, 1, actions))
+            else:
+                # Single action per trajectory
+                # probs shape = (batch x num_trajectories x res), actions shape = (batch, num_trajectories)
+                # Reshape to (batch . num_trajectories x 1\res) for easy gathering
+                # Then reshape result back to (batch, num_trajectories)
+                selected_probs = torch.gather(
+                    probs.view(mask.size(0) * args.num_trajectories, res),
+                    1,
+                    actions.view(mask.size(0) * args.num_trajectories, 1)).view(actions.shape)
+                logprobs = torch.log(selected_probs)
+
+            logprob_tensor[:, :, step] = logprobs
+
+            # Initial acquisition: add rows to mask in parallel (shape = batch x num_rows x 1\res x res x 2)
+            # NOTE: In the first step, this changes mask shape to have size num_rows rather than 1 in dim 1.
+            #  This results in unacquired also obtaining this shape. Hence, get_policy_probs requires that
+            #  output is also this shape.
+            mask, masked_kspace = acquire_rows_in_batch_parallel(kspace, masked_kspace, mask, actions)
+
             if args.estimator == 'start_adaptive':
-                loss = torch.zeros(1)  # Set placeholder for loss
-
-                # Sample initial actions from policy: batch x k
-                if step == 0:
-                    # Transpose because sampling k adds dim 0 of size k (rather than dim 1 of size k)
-                    actions = policy.sample((k,)).transpose(0, 1)
-                else:  # Here policy has batch_shape = (batch x num_trajectories), so we just need a sample
-                    actions = policy.sample()
-
-                # Store actions and logprobs for later gradient estimation
-                action_tensor[:, :, step] = actions
-
-                if step == 0:
-                    # Parallel sampling of multiple actions
-                    # probs shape = (batch x res), actions shape = (batch, num_trajectories
-                    logprob_tensor[:, :, step] = torch.log(torch.gather(probs, 1, actions))
-                else:
-                    # Single action per trajectory
-                    # probs shape = (batch x num_trajectories x res), actions shape = (batch, num_trajectories)
-                    # Reshape to (batch . num_trajectories x 1\res) for easy gathering
-                    # Then reshape result back to (batch, num_trajectories)
-                    selected_probs = torch.gather(
-                        probs.view(mask.size(0) * args.num_trajectories, res),
-                        1,
-                        actions.view(mask.size(0) * args.num_trajectories, 1)).view(actions.shape)
-                    logprob_tensor[:, :, step] = torch.log(selected_probs)
-
-                # Initial acquisition: add rows to mask in parallel (shape = batch x num_rows x 1\res x res x 2)
-                # NOTE: In the first step, this changes mask shape to have size num_rows rather than 1 in dim 1.
-                #  This results in unacquired also obtaining this shape. Hence, get_policy_and_probs requires that
-                #  output is also this shape.
-                mask, masked_kspace = acquire_rows_in_batch_parallel(kspace, masked_kspace, mask, actions)
+                loss = torch.zeros(1)
 
                 # Not yet at the end: get policy for next acquisition
                 if step != args.acquisition_steps - 1:
                     # Mutate unacquired so that we can obtain a new policy on remaining rows
                     unacquired = (mask == 0).squeeze().float()
                     # Get policy on remaining rows (essentially just renormalisation) for next step
-                    policy, probs = get_policy_and_probs(output, unacquired)
+                    probs = get_policy_probs(impro_output, unacquired)
 
-                # End: get return
-                else:
-                    batch_mk = masked_kspace.view(mask.size(0) * args.num_trajectories, 1, res, res, 2)
-                    # Get new zf: shape = (batch . num_rows x 1 x res x res)
-                    zf, _, _ = get_new_zf(batch_mk)
-                    # Get new reconstruction
-                    recons_output = recon_model_forward_pass(args, recon_model, zf)
-                    # shape = batch . k x 1 x res x res, extract reconstruction to compute target
-                    recons = recons_output[:, 0:1, ...]
-                    # shape = batch x k x res x res
-                    recons = recons.view(mask.size(0), args.num_trajectories, res, res)
-                    unnorm_recons = recons * gt_std + gt_mean
-                    gt_exp = unnorm_gt.expand(-1, args.num_trajectories, -1, -1)
-                    # scores = batch x k (channels), base_score = batch x 1
-                    scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
-                    returns = (scores - base_score)
+                else:  # Final step: only now compute reconstruction and return
+                    scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
+                                                      gt_mean, gt_std, unnorm_gt, data_range)
 
                     # Store returns in final index of reward tensor (returns = reward_tensor[:, :, -1])
-                    reward_tensor[:, :, step] = returns
+                    reward_tensor[:, :, step] = scores - base_score
 
                     # Calculate loss
                     baseline = 0
                     loss = -1 * (reward_tensor[:, :, -1] - baseline) * torch.sum(logprob_tensor, dim=2)
                     loss = loss.mean()  # Average over batch and trajectories
                     loss.backward()
+
+            elif args.estimator == 'full':
+                scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
+                                                  gt_mean, gt_std, unnorm_gt, data_range)
+                # Store rewards shape = (batch x num_trajectories)
+                rewards = scores - base_score
+                reward_tensor[:, :, step] = rewards
+                # Set new base_score (we learn improvements)
+                base_score = scores
+
+                # TODO: actual gradient estimator
+                baseline = 0
+                loss = -1 * (rewards - baseline) * logprobs
+                loss = loss.mean()  # Average over batch and trajectories
+                loss.backward()
+
+                # If not final step: get policy for next step from current reconstruction
+                if step != args.acquisition_steps - 1:
+                    # Get policy model output
+                    impro_output, _ = impro_model_forward_pass(args, model, impro_input,
+                                                               mask.view(mask.size(0) * args.num_trajectories, res))
+                    # del impro_input
+                    # Shape back to batch x num_trajectories x res
+                    impro_output = impro_output.view(mask.size(0), args.num_trajectories, res)
+                    # Mutate unacquired so that we can obtain a new policy on remaining rows
+                    unacquired = (mask == 0).squeeze().float()
+                    # Get policy on remaining rows (essentially just renormalisation) for next step
+                    probs = get_policy_probs(impro_output, unacquired)
+
+            else:
+                raise ValueError(f'{args.estimator} is not a valid estimator!')
 
             epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
             report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
@@ -384,12 +424,12 @@ def main(args):
     # Training and evaluation
     k = args.num_trajectories
 
-    # TODO: remove this
-    # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
-    train_batch = next(iter(train_loader))
-    train_loader = [train_batch] * 10
-    dev_batch = next(iter(dev_loader))
-    dev_loader = [dev_batch] * 1
+    # # TODO: remove this
+    # # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
+    # train_batch = next(iter(train_loader))
+    # train_loader = [train_batch] * 10
+    # dev_batch = next(iter(dev_loader))
+    # dev_loader = [dev_batch] * 1
 
     # if args.do_train_ssim:
     #     train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
