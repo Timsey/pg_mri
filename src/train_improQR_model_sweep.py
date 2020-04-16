@@ -488,12 +488,11 @@ def main(args):
 
     if not isinstance(model, str):
         # Parameter counting
-        if args.verbose >= 1:
-            logging.info('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
-                count_parameters(recon_model), count_trainable_parameters(recon_model),
-                count_untrainable_parameters(recon_model)))
-            logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
-                count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
+        logging.info('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
+            count_parameters(recon_model), count_trainable_parameters(recon_model),
+            count_untrainable_parameters(recon_model)))
+        logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
+            count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
 
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
