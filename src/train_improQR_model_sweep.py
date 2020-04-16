@@ -158,29 +158,23 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             action_rewards = torch.gather(target, 1, actions)
 
             if args.estimator == 'wr':
-                if args.baseline == 'self':
-                    # With replacement
-                    # batch x 1
-                    avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
-                    # REINFORCE with self-baselines
-                    # batch x k
-                    loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
-                    # batch x 1
-                    loss = loss.sum(dim=1)
-                    # 1 x 1
-                    loss = loss.mean()
-                elif args.baseline == 'step':
-                    pass
-                else:
-                    raise ValueError(f'{args.baseline} is not a valid baseline')
+                # With replacement
+                # batch x 1
+                avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
+                # REINFORCE with self-baselines
+                # batch x k
+                loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
+                # batch x 1
+                loss = loss.sum(dim=1)
+
             elif args.estimator == 'wor':
-                assert args.baseline == 'self', f"Cannot do baseline {args.baseline} for without replacement estimator"
                 # Without replacement
+                # batch x 1
                 loss = reinforce_unordered(-1 * action_rewards, action_logprobs)
-                loss = loss.mean()
             else:
                 raise ValueError(f'{args.estimator} is not a valid estimator.')
 
+            loss.mean()
             loss.backward()
 
             epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
@@ -577,8 +571,6 @@ def create_arg_parser():
                         help='Which estimator to use: with replacement (wr), or without replacement (wor)')
     parser.add_argument('--acq_strat', type=str, default='greedy',
                         help='Which acquisition strategy to use: greedy or sample')
-    parser.add_argument('--baseline', type=str, default='self',
-                        help='Which baseline to use: self (Wouter) or step (acquisition-step moving average)')
 
     parser.add_argument('--exp-dir', type=pathlib.Path, default='/var/scratch/tbbakker/mrimpro/sweep_results/',
                         help='Directory where model and results should be saved. Will create a timestamped folder '

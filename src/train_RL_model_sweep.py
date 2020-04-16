@@ -84,7 +84,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     k = args.num_trajectories
 
     # Initialise baseline if it doesn't exist yet (should only happen on epoch 0)
-    if args.estimator == 'full_step':
+    if args.estimator in ['start_adaptive', 'full_step']:
         if baseline is None:
             baseline = torch.zeros(args.acquisition_steps)
 
@@ -150,6 +150,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 elif args.estimator in ['start_adaptive', 'full_step']:  # REINFORCE
                     # Sampling with replacement
                     actions = torch.multinomial(probs, k, replacement=True)
+                    # if epoch == 10:
+                    #     a = 1
             else:  # Here policy has batch_shape = (batch x num_trajectories), so we just need a sample
                 # Since we're only taking a single sample per trajectory, this is 'without replacement'
                 policy = torch.distributions.Categorical(probs)
@@ -169,13 +171,14 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 # Reshape to (batch . num_trajectories x 1\res) for easy gathering
                 # Then reshape result back to (batch, num_trajectories)
                 selected_probs = torch.gather(
-                    probs.view(mask.size(0) * args.num_trajectories, res),
+                    probs.view(gt.size(0) * args.num_trajectories, res),
                     1,
-                    actions.view(mask.size(0) * args.num_trajectories, 1)).view(actions.shape)
+                    actions.view(gt.size(0) * args.num_trajectories, 1)).view(actions.shape)
                 logprobs = torch.log(selected_probs)
 
             # logprob_tensor[:, :, step] = logprobs
-            logprob_list.append(logprobs)
+            if not args.greedy:  # Store logprobs for non-greedy REINFORCE
+                logprob_list.append(logprobs)
 
             # Initial acquisition: add rows to mask in parallel (shape = batch x num_rows x 1\res x res x 2)
             # NOTE: In the first step, this changes mask shape to have size num_rows rather than 1 in dim 1.
@@ -200,6 +203,11 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     # reward_tensor[:, :, step] = scores - base_score
                     reward_list.append(scores - base_score)
 
+                    # Keep running average step baseline
+                    if baseline[step] == 0:  # Need to initialise
+                        baseline[step] = (scores - base_score).mean()
+                    baseline[step] = baseline[step] * 0.99 + 0.01 * (scores - base_score).mean()
+
                     # Calculate loss
                     # REINFORCE on return with 0 baseline
                     loss = -1 * (reward_list[-1] - baseline[-1]) * torch.sum(torch.stack(logprob_list), dim=0)
@@ -207,8 +215,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     loss.backward()
 
                     # Stores 0 loss for all steps but the last
-                    epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
-                    report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
+                    epoch_loss[step] += loss.item() / len(train_loader) * gt.size(0) / args.batch_size
+                    report_loss[step] += loss.item() / args.report_interval * gt.size(0) / args.batch_size
                     writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
             elif args.estimator in ['full_local', 'full_step']:
@@ -217,6 +225,16 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 # Store rewards shape = (batch x num_trajectories)
                 # reward_tensor[:, :, step] = scores - base_score
                 reward_list.append(scores - base_score)
+
+                if args.greedy:  # REINFORCE greedy with step baseline
+                    # Use reward within a step
+                    loss = -1 * (reward_list[step] - baseline[step]) * logprobs
+                    loss = loss.mean()
+                    loss.backward()
+
+                    epoch_loss[step] += loss.item() / len(train_loader) * gt.size(0) / args.batch_size
+                    report_loss[step] += loss.item() / args.report_interval * gt.size(0) / args.batch_size
+                    writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
                 if args.estimator == 'full_step':
                     # Keep running average step baseline
@@ -231,13 +249,13 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 if step != args.acquisition_steps - 1:
                     # Get policy model output
                     impro_output, _ = impro_model_forward_pass(args, model, impro_input,
-                                                               mask.view(mask.size(0) * k, res))
+                                                               mask.view(gt.size(0) * k, res))
                     # del impro_input
                     # Shape back to batch x num_trajectories x res
-                    impro_output = impro_output.view(mask.size(0), k, res)
+                    impro_output = impro_output.view(gt.size(0), k, res)
                     # Need to make sure the channel dim remains unsqueezed when k = 1
                     unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
-                    # Get policy on remaining rows (essentially just renormalisation) for next step
+                    # Get policy on remaining rows for next step
                     probs = get_policy_probs(impro_output, unacquired)
 
                 # Have all rewards, do REINFORCE / GPOMDP
@@ -245,7 +263,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     if args.estimator == 'full_local':
                         # TODO: local gradient estimator (Wouter)
                         pass
-                    elif args.estimator == 'full_step':  # GPOMDP with step baseline
+                    elif args.estimator == 'full_step' and not args.greedy:  # GPOMDP with step baseline
                         # for step in range(reward_tensor.size(-1)):
                         #     baseline = 0
                         #     # GPOMDP: use return from current state onward
@@ -263,16 +281,19 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                         #     loss = loss.mean()  # Average over batch and trajectories
                         #     loss.backward()
                         for step, logprobs in enumerate(logprob_list):
+                            # REINFORCE nongreedy with step baseline
                             # GPOMDP: use return from current state onward
                             loss = -1 * (reward_tensor[step:].sum(dim=0) - baseline[step:].sum()) * logprobs
                             loss = loss.mean()  # Average over batch and trajectories
                             loss.backward()
 
-                            epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
-                            report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
+                            epoch_loss[step] += loss.item() / len(train_loader) * gt.size(0) / args.batch_size
+                            report_loss[step] += loss.item() / args.report_interval * gt.size(0) / args.batch_size
                             writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
+                    elif args.greedy:
+                        pass
                     else:
-                        raise ValueError(f'{args.estimator} is not a valid estimator!')
+                        raise ValueError('Something went wrong.')
             else:
                 raise ValueError(f'{args.estimator} is not a valid estimator!')
 
@@ -387,8 +408,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
             for step in range(args.acquisition_steps):
                 # Sample initial actions from policy: batch x k
                 if step == 0:
-                    # Sampling without replacement
-                    actions = torch.multinomial(probs, k, replacement=False)
+                    if args.estimator in ['full_local']:  # Wouter's thing
+                        # Sampling without replacement
+                        actions = torch.multinomial(probs, k, replacement=False)
+                    elif args.estimator in ['start_adaptive', 'full_step']:  # REINFORCE
+                        # Sampling with replacement
+                        actions = torch.multinomial(probs, k, replacement=True)
                 else:  # Here policy has batch_shape = (batch x num_trajectories), so we just need a sample
                     # Since we're only taking a single sample per trajectory, this is 'without replacement'
                     policy = torch.distributions.Categorical(probs)
@@ -409,14 +434,14 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
                         unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
                         # Get policy on remaining rows (essentially just renormalisation) for next step
                         probs = get_policy_probs(impro_output, unacquired)
-                        scores = torch.zeros((mask.size(0), k)) + init_ssim_val / mask.size(0)
+                        scores = torch.zeros((gt.size(0), k)) + init_ssim_val / gt.size(0)
 
                     else:  # Final step: only now compute reconstruction and return
                         scores, _ = get_rewards(args, res, mask, masked_kspace, recon_model,
                                                 gt_mean, gt_std, unnorm_gt, data_range, k)
 
                 # Option 3)
-                elif args.estimator == 'full':
+                elif args.estimator in ['full_step', 'full_local']:
                     scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
                                                       gt_mean, gt_std, unnorm_gt, data_range, k)
 
@@ -424,10 +449,10 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
                     if step != args.acquisition_steps - 1:
                         # Get policy model output
                         impro_output, _ = impro_model_forward_pass(args, model, impro_input,
-                                                                   mask.view(mask.size(0) * k, res))
+                                                                   mask.view(gt.size(0) * k, res))
                         # del impro_input
                         # Shape back to batch x num_trajectories x res
-                        impro_output = impro_output.view(mask.size(0), k, res)
+                        impro_output = impro_output.view(gt.size(0), k, res)
                         # Mutate unacquired so that we can obtain a new policy on remaining rows
                         # Need to make sure the channel dim remains unsqueezed when k = 1
                         unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
@@ -608,6 +633,8 @@ def create_arg_parser():
     parser.add_argument('--pool-stride', default=1, type=int, help='Each how many layers to do max pooling.')
 
     # Bools
+    parser.add_argument('--greedy', type=str2bool, default=False,
+                        help="Whether to do greedy REINFORCE (only works with 'full_step' estimator).")
     parser.add_argument('--use-sensitivity', type=str2bool, default=False,
                         help='Whether to use reconstruction model sensitivity as input to the improvement model.')
     parser.add_argument('--center-volume', type=str2bool, default=True,
