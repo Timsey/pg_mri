@@ -262,7 +262,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 else:
                     if args.estimator == 'full_local':
                         # TODO: local gradient estimator (Wouter)
-                        pass
+                        raise NotImplementedError
                     elif args.estimator == 'full_step' and not args.greedy:  # GPOMDP with step baseline
                         # for step in range(reward_tensor.size(-1)):
                         #     baseline = 0
@@ -531,10 +531,10 @@ def main(args):
 
     # # TODO: remove this
     # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
-    train_batch = next(iter(train_loader))
-    train_loader = [train_batch] * 10
-    dev_batch = next(iter(dev_loader))
-    dev_loader = [dev_batch] * 1
+    # train_batch = next(iter(train_loader))
+    # train_loader = [train_batch] * 10
+    # dev_batch = next(iter(dev_loader))
+    # dev_loader = [dev_batch] * 1
 
     # if args.do_train_ssim:
     #     train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
