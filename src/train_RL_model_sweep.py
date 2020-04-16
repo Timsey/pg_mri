@@ -531,21 +531,21 @@ def main(args):
 
     # # TODO: remove this
     # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
-    # train_batch = next(iter(train_loader))
-    # train_loader = [train_batch] * 10
-    # dev_batch = next(iter(dev_loader))
-    # dev_loader = [dev_batch] * 1
+    train_batch = next(iter(train_loader))
+    train_loader = [train_batch] * 10
+    dev_batch = next(iter(dev_loader))
+    dev_loader = [dev_batch] * 1
 
-    if args.do_train_ssim:
-        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
-        train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
-        logging.info(f'TrainSSIM = [{train_ssims_str}]')
-        logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
-
-    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer, False)
-    dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
-    logging.info(f'  DevSSIM = [{dev_ssims_str}]')
-    logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+    # if args.do_train_ssim:
+    #     train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
+    #     train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+    #     logging.info(f'TrainSSIM = [{train_ssims_str}]')
+    #     logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
+    #
+    # dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer, False)
+    # dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+    # logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+    # logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
     baseline = None
     for epoch in range(start_epoch, args.num_epochs):
@@ -688,7 +688,7 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    args.wandb = True
+    args.wandb = False
 
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
