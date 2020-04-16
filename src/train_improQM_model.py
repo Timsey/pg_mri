@@ -455,7 +455,7 @@ def main(args):
             logging.info('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
                 count_parameters(recon_model), count_trainable_parameters(recon_model),
                 count_untrainable_parameters(recon_model)))
-            logging.info('Improvement model parameters: total {}, of which {} trainable and {} untrainable'.format(
+            logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
                 count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
         if args.verbose >= 3:
             for p in model.parameters():

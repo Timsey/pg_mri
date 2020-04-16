@@ -28,10 +28,11 @@ import sys
 sys.path.insert(0, '/var/scratch/tbbakker/mrimpro/')  # noqa: F401
 
 from src.helpers.torch_metrics import ssim
-from src.helpers.utils import add_mask_params, save_json, check_args_consistency
+from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
+                               count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
-from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, get_new_zf, acquire_new_zf_batch,
-                                                recon_model_forward_pass, create_impro_model_input, load_recon_model)
+from src.recon_models.recon_model_utils import (get_new_zf, acquire_new_zf_batch, create_impro_model_input,
+                                                load_recon_model)
 from src.impro_models.impro_model_utils import build_impro_model, build_optim, save_model, impro_model_forward_pass
 
 logging.basicConfig(level=logging.INFO)
@@ -523,6 +524,15 @@ def main(args):
 
     # Initialise summary writer
     writer = SummaryWriter(log_dir=args.run_dir / 'summary')
+
+    if not isinstance(model, str):
+        # Parameter counting
+        if args.verbose >= 1:
+            logging.info('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
+                count_parameters(recon_model), count_trainable_parameters(recon_model),
+                count_untrainable_parameters(recon_model)))
+            logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
+                count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
 
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
