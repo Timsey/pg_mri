@@ -24,6 +24,7 @@
       <w>encs</w>
       <w>fastmri</w>
       <w>fname</w>
+      <w>gpomdp</w>
       <w>graphviz</w>
       <w>hyperband</w>
       <w>impro</w>
@@ -73,6 +74,7 @@
       <w>softmax</w>
       <w>ssim</w>
       <w>ssims</w>
+      <w>strat</w>
       <w>subsampling</w>
       <w>tbakker</w>
       <w>tbbakker</w>
@@ -86,10 +88,12 @@
       <w>unnorm</w>
       <w>unnormalisation</w>
       <w>unsqueeze</w>
+      <w>unsqueezed</w>
       <w>untrainable</w>
       <w>vals</w>
       <w>vectorise</w>
       <w>wandb</w>
+      <w>wouter</w>
     </words>
   </dictionary>
 </component>

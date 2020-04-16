@@ -42,8 +42,8 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
-def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, unnorm_gt, data_range):
-    batch_mk = masked_kspace.view(mask.size(0) * args.num_trajectories, 1, res, res, 2)
+def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, unnorm_gt, data_range, k):
+    batch_mk = masked_kspace.view(mask.size(0) * k, 1, res, res, 2)
     # Get new zf: shape = (batch . num_rows x 1 x res x res)
     zf, _, _ = get_new_zf(batch_mk)
     # Get new reconstruction
@@ -51,9 +51,9 @@ def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, un
     # shape = batch . k x 1 x res x res, extract reconstruction to compute target
     recons = impro_input[:, 0:1, ...]
     # shape = batch x k x res x res
-    recons = recons.view(mask.size(0), args.num_trajectories, res, res)
+    recons = recons.view(mask.size(0), k, res, res)
     unnorm_recons = recons * gt_std + gt_mean
-    gt_exp = unnorm_gt.expand(-1, args.num_trajectories, -1, -1)
+    gt_exp = unnorm_gt.expand(-1, k, -1, -1)
     # scores = batch x k (channels), base_score = batch x 1
     scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
     return scores, impro_input
@@ -73,7 +73,7 @@ def get_policy_probs(output, unacquired):
     return probs
 
 
-def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k):
+def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, baseline):
     model.train()
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -81,6 +81,13 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     global_step = epoch * len(train_loader)
 
     res = args.resolution
+    k = args.num_trajectories
+
+    # Initialise baseline if it doesn't exist yet (should only happen on epoch 0)
+    if args.estimator == 'full_step':
+        if baseline is None:
+            baseline = torch.zeros(args.acquisition_steps)
+
     for it, data in enumerate(train_loader):
         kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
         # shape after unsqueeze = batch x channel x columns x rows x complex
@@ -121,27 +128,36 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         # Initialise data tensors
         # Shape = (batch x trajectories x num_steps)
-        action_tensor = torch.zeros((mask.size(0), args.num_trajectories, args.acquisition_steps)).to(args.device)
-        logprob_tensor = torch.zeros((mask.size(0), args.num_trajectories, args.acquisition_steps)).to(args.device)
-        reward_tensor = torch.zeros((mask.size(0), args.num_trajectories, args.acquisition_steps)).to(args.device)
+        # action_tensor = torch.zeros((mask.size(0), args.num_trajectories, args.acquisition_steps)).to(args.device)
+        # logprob_tensor = torch.zeros((mask.size(0), args.num_trajectories, args.acquisition_steps)).to(args.device)
+        # reward_tensor = torch.zeros((mask.size(0), args.num_trajectories, args.acquisition_steps)).to(args.device)
+        action_list = []
+        logprob_list = []
+        reward_list = []
 
         # Initial policy
         impro_output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
-        unacquired = (mask == 0).squeeze().float()
+        # Need to squeeze all dims but batch and row dim here
+        unacquired = (mask == 0).squeeze(-4).squeeze(-3).squeeze(-1).float()
         probs = get_policy_probs(impro_output, unacquired)
 
         for step in range(args.acquisition_steps):
             # Sample initial actions from policy: batch x k
             if step == 0:
-                # Sampling without replacement
-                actions = torch.multinomial(probs, k, replacement=False)
+                if args.estimator in ['full_local']:  # Wouter's thing
+                    # Sampling without replacement
+                    actions = torch.multinomial(probs, k, replacement=False)
+                elif args.estimator in ['start_adaptive', 'full_step']:  # REINFORCE
+                    # Sampling with replacement
+                    actions = torch.multinomial(probs, k, replacement=True)
             else:  # Here policy has batch_shape = (batch x num_trajectories), so we just need a sample
                 # Since we're only taking a single sample per trajectory, this is 'without replacement'
                 policy = torch.distributions.Categorical(probs)
                 actions = policy.sample()
 
             # Store actions and logprobs for later gradient estimation
-            action_tensor[:, :, step] = actions
+            # action_tensor[:, :, step] = actions
+            action_list.append(actions)
 
             if step == 0:
                 # Parallel sampling of multiple actions
@@ -158,7 +174,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     actions.view(mask.size(0) * args.num_trajectories, 1)).view(actions.shape)
                 logprobs = torch.log(selected_probs)
 
-            logprob_tensor[:, :, step] = logprobs
+            # logprob_tensor[:, :, step] = logprobs
+            logprob_list.append(logprobs)
 
             # Initial acquisition: add rows to mask in parallel (shape = batch x num_rows x 1\res x res x 2)
             # NOTE: In the first step, this changes mask shape to have size num_rows rather than 1 in dim 1.
@@ -167,62 +184,97 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             mask, masked_kspace = acquire_rows_in_batch_parallel(kspace, masked_kspace, mask, actions)
 
             if args.estimator == 'start_adaptive':
-                loss = torch.zeros(1)
-
                 # Not yet at the end: get policy for next acquisition
                 if step != args.acquisition_steps - 1:
                     # Mutate unacquired so that we can obtain a new policy on remaining rows
-                    unacquired = (mask == 0).squeeze().float()
+                    # Need to make sure the channel dim remains unsqueezed when k = 1
+                    unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
                     # Get policy on remaining rows (essentially just renormalisation) for next step
                     probs = get_policy_probs(impro_output, unacquired)
 
                 else:  # Final step: only now compute reconstruction and return
                     scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
-                                                      gt_mean, gt_std, unnorm_gt, data_range)
+                                                      gt_mean, gt_std, unnorm_gt, data_range, k)
 
                     # Store returns in final index of reward tensor (returns = reward_tensor[:, :, -1])
-                    reward_tensor[:, :, step] = scores - base_score
+                    # reward_tensor[:, :, step] = scores - base_score
+                    reward_list.append(scores - base_score)
 
                     # Calculate loss
-                    baseline = 0
-                    loss = -1 * (reward_tensor[:, :, -1] - baseline) * torch.sum(logprob_tensor, dim=2)
+                    # REINFORCE on return with 0 baseline
+                    loss = -1 * (reward_list[-1] - baseline[-1]) * torch.sum(torch.stack(logprob_list), dim=0)
                     loss = loss.mean()  # Average over batch and trajectories
                     loss.backward()
 
-            elif args.estimator == 'full':
+                    # Stores 0 loss for all steps but the last
+                    epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
+                    report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
+                    writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
+
+            elif args.estimator in ['full_local', 'full_step']:
                 scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
-                                                  gt_mean, gt_std, unnorm_gt, data_range)
+                                                  gt_mean, gt_std, unnorm_gt, data_range, k)
                 # Store rewards shape = (batch x num_trajectories)
-                rewards = scores - base_score
-                reward_tensor[:, :, step] = rewards
+                # reward_tensor[:, :, step] = scores - base_score
+                reward_list.append(scores - base_score)
+
+                if args.estimator == 'full_step':
+                    # Keep running average step baseline
+                    if baseline[step] == 0:  # Need to initialise
+                        baseline[step] = (scores - base_score).mean()
+                    baseline[step] = baseline[step] * 0.99 + 0.01 * (scores - base_score).mean()
+
                 # Set new base_score (we learn improvements)
                 base_score = scores
-
-                # TODO: actual gradient estimator
-                baseline = 0
-                loss = -1 * (rewards - baseline) * logprobs
-                loss = loss.mean()  # Average over batch and trajectories
-                loss.backward()
 
                 # If not final step: get policy for next step from current reconstruction
                 if step != args.acquisition_steps - 1:
                     # Get policy model output
                     impro_output, _ = impro_model_forward_pass(args, model, impro_input,
-                                                               mask.view(mask.size(0) * args.num_trajectories, res))
+                                                               mask.view(mask.size(0) * k, res))
                     # del impro_input
                     # Shape back to batch x num_trajectories x res
-                    impro_output = impro_output.view(mask.size(0), args.num_trajectories, res)
-                    # Mutate unacquired so that we can obtain a new policy on remaining rows
-                    unacquired = (mask == 0).squeeze().float()
+                    impro_output = impro_output.view(mask.size(0), k, res)
+                    # Need to make sure the channel dim remains unsqueezed when k = 1
+                    unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
                     # Get policy on remaining rows (essentially just renormalisation) for next step
                     probs = get_policy_probs(impro_output, unacquired)
 
+                # Have all rewards, do REINFORCE / GPOMDP
+                else:
+                    if args.estimator == 'full_local':
+                        # TODO: local gradient estimator (Wouter)
+                        pass
+                    elif args.estimator == 'full_step':  # GPOMDP with step baseline
+                        # for step in range(reward_tensor.size(-1)):
+                        #     baseline = 0
+                        #     # GPOMDP: use return from current state onward
+                        #     logprobs = logprob_tensor[:, :, step]
+                        #     loss = -1 * (reward_tensor[:, :, step:].sum(dim=-1) - baseline) * logprobs
+                        #     loss = loss.mean()  # Average over batch and trajectories
+                        #     loss.backward()
+                        reward_tensor = torch.stack(reward_list)
+                        # for step in reversed(range(args.acquisition_steps)):
+                        #     baseline = 0
+                        #     # GPOMDP: use return from current state onward
+                        #     logprobs = logprob_list.pop(step)
+                        #     loss = -1 * (reward_tensor[step:].sum(dim=0) - baseline) * logprobs
+                        #     del logprobs
+                        #     loss = loss.mean()  # Average over batch and trajectories
+                        #     loss.backward()
+                        for step, logprobs in enumerate(logprob_list):
+                            # GPOMDP: use return from current state onward
+                            loss = -1 * (reward_tensor[step:].sum(dim=0) - baseline[step:].sum()) * logprobs
+                            loss = loss.mean()  # Average over batch and trajectories
+                            loss.backward()
+
+                            epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
+                            report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
+                            writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
+                    else:
+                        raise ValueError(f'{args.estimator} is not a valid estimator!')
             else:
                 raise ValueError(f'{args.estimator} is not a valid estimator!')
-
-            epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
-            report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
-            writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
         optimiser.step()
 
@@ -246,7 +298,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     if args.wandb:
         wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
 
-    return np.mean(epoch_loss), time.perf_counter() - start_epoch
+    return np.mean(epoch_loss), time.perf_counter() - start_epoch, baseline
 
 
 def acquire_rows_in_batch_parallel(k, mk, mask, to_acquire):
@@ -295,9 +347,11 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     model.eval()
 
     ssims = 0
-    epoch_outputs = defaultdict(list)
     tbs = 0
     start = time.perf_counter()
+
+    res = args.resolution
+    k = args.num_dev_trajectories
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
             kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
@@ -324,34 +378,67 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
 
             batch_ssims = [init_ssim_val.item()]
 
-            for step in range(args.acquisition_steps):
-                # Improvement model output
-                # TODO: inefficient to do this every step for some models
-                output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
-                epoch_outputs[step + 1].append(output.to('cpu').numpy())
-                # Greedy policy (size = batch)
-                # Only acquire rows that have not been already acquired
-                # TODO: Could just take the max of the masked output
-                _, topk_rows = torch.topk(output, args.resolution, dim=1)
-                unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
-                next_rows = []
-                for j, sl_topk_rows in enumerate(topk_rows):
-                    for row in sl_topk_rows:
-                        if row in unacquired[j, :].nonzero().flatten():
-                            next_rows.append(row)
-                            break
-                # TODO: moving to device should happen only once before both loops. Should just mutate object after
-                next_rows = torch.tensor(next_rows).long().to(args.device)
+            # Initial policy
+            impro_output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
+            # Need to squeeze all dims but batch and row dim here
+            unacquired = (mask == 0).squeeze(-4).squeeze(-3).squeeze(-1).float()
+            probs = get_policy_probs(impro_output, unacquired)
 
-                # Acquire this row
-                impro_input, zf, _, _, mask, masked_kspace = acquire_row_and_get_new_recon(kspace, masked_kspace, next_rows, mask,
-                                                                         recon_model)
-                unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
-                # shape = 1
-                ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
-                                data_range=data_range).mean(dim=(-1, -2)).sum()
-                # eventually shape = al_steps
-                batch_ssims.append(ssim_val.item())
+            for step in range(args.acquisition_steps):
+                # Sample initial actions from policy: batch x k
+                if step == 0:
+                    # Sampling without replacement
+                    actions = torch.multinomial(probs, k, replacement=False)
+                else:  # Here policy has batch_shape = (batch x num_trajectories), so we just need a sample
+                    # Since we're only taking a single sample per trajectory, this is 'without replacement'
+                    policy = torch.distributions.Categorical(probs)
+                    actions = policy.sample()
+
+                # Initial acquisition: add rows to mask in parallel (shape = batch x num_rows x 1\res x res x 2)
+                # NOTE: In the first step, this changes mask shape to have size num_rows rather than 1 in dim 1.
+                #  This results in unacquired also obtaining this shape. Hence, get_policy_probs requires that
+                #  output is also this shape.
+                mask, masked_kspace = acquire_rows_in_batch_parallel(kspace, masked_kspace, mask, actions)
+
+                # Option 1)
+                if args.estimator == 'start_adaptive':
+                    # Not yet at the end: get policy for next acquisition
+                    if step != args.acquisition_steps - 1:
+                        # Mutate unacquired so that we can obtain a new policy on remaining rows
+                        # Need to make sure the channel dim remains unsqueezed when k = 1
+                        unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
+                        # Get policy on remaining rows (essentially just renormalisation) for next step
+                        probs = get_policy_probs(impro_output, unacquired)
+                        scores = torch.zeros((mask.size(0), k)) + init_ssim_val / mask.size(0)
+
+                    else:  # Final step: only now compute reconstruction and return
+                        scores, _ = get_rewards(args, res, mask, masked_kspace, recon_model,
+                                                gt_mean, gt_std, unnorm_gt, data_range, k)
+
+                # Option 3)
+                elif args.estimator == 'full':
+                    scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
+                                                      gt_mean, gt_std, unnorm_gt, data_range, k)
+
+                    # If not final step: get policy for next step from current reconstruction
+                    if step != args.acquisition_steps - 1:
+                        # Get policy model output
+                        impro_output, _ = impro_model_forward_pass(args, model, impro_input,
+                                                                   mask.view(mask.size(0) * k, res))
+                        # del impro_input
+                        # Shape back to batch x num_trajectories x res
+                        impro_output = impro_output.view(mask.size(0), k, res)
+                        # Mutate unacquired so that we can obtain a new policy on remaining rows
+                        # Need to make sure the channel dim remains unsqueezed when k = 1
+                        unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
+                        # Get policy on remaining rows (essentially just renormalisation) for next step
+                        probs = get_policy_probs(impro_output, unacquired)
+
+                else:
+                    raise ValueError(f'{args.estimator} is not a valid estimator!')
+
+                # Average over trajectories, sum over batch dimension
+                batch_ssims.append(scores.mean(dim=1).sum().item())
 
             # shape = al_steps
             ssims += np.array(batch_ssims)
@@ -359,10 +446,6 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     ssims /= tbs
 
     if not train:
-        for step in range(args.acquisition_steps):
-            outputs[epoch][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
-        save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
-
         for step, val in enumerate(ssims):
             writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
 
@@ -421,31 +504,29 @@ def main(args):
 
     scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
 
-    # Training and evaluation
-    k = args.num_trajectories
-
     # # TODO: remove this
-    # # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
+    # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
     # train_batch = next(iter(train_loader))
     # train_loader = [train_batch] * 10
     # dev_batch = next(iter(dev_loader))
     # dev_loader = [dev_batch] * 1
 
-    # if args.do_train_ssim:
-    #     train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
-    #     train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
-    #     logging.info(f'TrainSSIM = [{train_ssims_str}]')
-    #     logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
-    #
-    # dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer, False)
-    # dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
-    # logging.info(f'  DevSSIM = [{dev_ssims_str}]')
-    # logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+    if args.do_train_ssim:
+        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
+        train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+        logging.info(f'TrainSSIM = [{train_ssims_str}]')
+        logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
 
+    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer, False)
+    dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+    logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+    logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+
+    baseline = None
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
-        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k)
-        # dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
+        train_loss, train_time, baseline = train_epoch(args, epoch, recon_model, model, train_loader,
+                                                       optimiser, writer, baseline)
         dev_loss, dev_loss_time = 0, 0
         dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, False)
 
@@ -494,7 +575,8 @@ def create_arg_parser():
                         'improvement model checkpoint.')
     parser.add_argument('--estimator', default='start_adaptive',
                         help='How to estimate gradients.')
-    parser.add_argument('--num-trajectories', type=int, default=10, help='Number of trajectories to sample.')
+    parser.add_argument('--num-trajectories', type=int, default=10, help='Number of trajectories to sample for train.')
+    parser.add_argument('--num-dev-trajectories', type=int, default=10, help='Number of trajectories to sample eval.')
     parser.add_argument('--report-interval', type=int, default=100, help='Period of loss reporting')
     parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
@@ -579,7 +661,7 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    args.wandb = False
+    args.wandb = True
 
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
