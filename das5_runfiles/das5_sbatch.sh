@@ -6,7 +6,7 @@
 
 echo "Starting"
 
-conda activate fastmri
+#conda activate fastmri
 nvidia-smi
 
 # Hier wat je wilt runnen
