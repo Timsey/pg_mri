@@ -438,8 +438,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
 
         if args.wandb:
             wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
-            wandb.log({'val_ssims.10': ssims[-1]}, step=epoch + 1)
-            wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
+            wandb.log({f'val_ssims.{args.acquisition_steps}': ssims[-1]}, step=epoch + 1)
+            wandb.log({f'val_ssims_{args.acquisition_steps}': ssims[-1]}, step=epoch + 1)
     else:
         if args.wandb:
             wandb.log({'train_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)

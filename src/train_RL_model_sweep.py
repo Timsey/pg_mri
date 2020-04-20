@@ -368,6 +368,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     """
     model.eval()
 
+    epoch_outputs = defaultdict(list)
+
     ssims = 0
     tbs = 0
     start = time.perf_counter()
@@ -402,6 +404,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
 
             # Initial policy
             impro_output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
+            epoch_outputs[0].append(impro_output.to('cpu').numpy())
+
             # Need to squeeze all dims but batch and row dim here
             unacquired = (mask == 0).squeeze(-4).squeeze(-3).squeeze(-1).float()
             probs = get_policy_probs(impro_output, unacquired)
@@ -440,6 +444,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
                     else:  # Final step: only now compute reconstruction and return
                         scores, _ = get_rewards(args, res, mask, masked_kspace, recon_model,
                                                 gt_mean, gt_std, unnorm_gt, data_range, k)
+                        # Predictions are the same every step, so don't need to store anything in epoch_outputs
 
                 # Option 3)
                 elif args.estimator in ['full_step', 'full_local']:
@@ -454,6 +459,9 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
                         # del impro_input
                         # Shape back to batch x num_trajectories x res
                         impro_output = impro_output.view(gt.size(0), k, res)
+                        # Store predictions, but as mean of trajectories per slice.
+                        epoch_outputs[step + 1].append(impro_output.mean(dim=1).to('cpu').numpy())
+
                         # Mutate unacquired so that we can obtain a new policy on remaining rows
                         # Need to make sure the channel dim remains unsqueezed when k = 1
                         unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
@@ -472,13 +480,17 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     ssims /= tbs
 
     if not train:
+        for step in epoch_outputs.keys():
+            outputs[epoch][step] = np.concatenate(epoch_outputs[step], axis=0).tolist()
+        save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
+
         for step, val in enumerate(ssims):
             writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
 
         if args.wandb:
             wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
-            wandb.log({'val_ssims.10': ssims[-1]}, step=epoch + 1)
-            wandb.log({'val_ssims_10': ssims[-1]}, step=epoch + 1)
+            wandb.log({f'val_ssims.{args.acquisition_steps}': ssims[-1]}, step=epoch + 1)
+            wandb.log({f'val_ssims_{args.acquisition_steps}': ssims[-1]}, step=epoch + 1)
     else:
         if args.wandb:
             wandb.log({'train_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
