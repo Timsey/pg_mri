@@ -74,6 +74,7 @@
       <w>softmax</w>
       <w>ssim</w>
       <w>ssims</w>
+      <w>statestep</w>
       <w>subsampling</w>
       <w>tbakker</w>
       <w>tbbakker</w>

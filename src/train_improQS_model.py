@@ -40,6 +40,28 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
+def create_data_range_dict(loader):
+    # Locate ground truths of a volume
+    gt_vol_dict = {}
+    for it, data in enumerate(loader):
+        # TODO: Use fname, slice to create state-step-dependent baseline
+        # TODO: use fname and initial loop over gt to find data range per fname
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, slice = data
+        for i, vol in enumerate(fname):
+            if vol not in gt_vol_dict:
+                gt_vol_dict[vol] = []
+            gt_vol_dict[vol].append(gt[i] * gt_std[i] + gt_mean[i])
+
+    # Find max of a volume
+    data_range_dict = {}
+    for vol, gts in gt_vol_dict.items():
+        # Shape 1 x 1 x 1 x 1
+        data_range_dict[vol] = torch.stack(gts).max().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(args.device)
+    del gt_vol_dict
+
+    return data_range_dict
+
+
 def get_pred_and_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, model, recon_model, impro_input,
                         data_range, eps, k):
     # Impro model output (Q(a|s) is used to select which targets to actually compute for fine-tuning Q(a|s)
@@ -117,7 +139,7 @@ def get_pred_and_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, g
     return target, output
 
 
-def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k, sorter):
+def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, eps, k, sorter, data_range_dict):
     # TODO: try batchnorm in FC layers
     model.train()
     cross_ent = CrossEntropyLoss(reduction='none')
@@ -137,7 +159,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     epoch_target_counts = defaultdict(lambda: 0)
 
     for it, data in enumerate(train_loader):
-        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -149,7 +171,12 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         unnorm_gt = gt * gt_std + gt_mean
-        data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        if args.data_range == 'gt':
+            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        elif args.data_range == 'volume':
+            data_range = torch.stack([data_range_dict[vol] for vol in fname])
+        else:
+            raise ValueError(f'{args.data_range} is not valid')
 
         # Base reconstruction model forward pass
         impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -254,7 +281,7 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
     return impro_input, zf, mean, std, mask, masked_kspace
 
 
-def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter):
+def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter, data_range_dict):
     # TODO: try batchnorm in FC layers
     model.eval()
     cross_ent = CrossEntropyLoss(reduction='none')
@@ -270,7 +297,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter
     global_step = epoch * len(dev_loader)
 
     for it, data in enumerate(dev_loader):
-        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -282,7 +309,12 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter
         gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         unnorm_gt = gt * gt_std + gt_mean
-        data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        if args.data_range == 'gt':
+            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        elif args.data_range == 'volume':
+            data_range = torch.stack([data_range_dict[vol] for vol in fname])
+        else:
+            raise ValueError(f'{args.data_range} is not valid')
 
         # Base reconstruction model forward pass
         impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -333,7 +365,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
 
-def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
+def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, data_range_dict):
     """
     Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
     """
@@ -351,7 +383,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     start = time.perf_counter()
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
             # TODO: Maybe normalisation unnecessary for SSIM target?
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
@@ -363,7 +395,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
             gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             unnorm_gt = gt * gt_std + gt_mean
-            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            if args.data_range == 'gt':
+                data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            elif args.data_range == 'volume':
+                data_range = torch.stack([data_range_dict[vol] for vol in fname])
+            else:
+                raise ValueError(f'{args.data_range} is not valid')
 
             tbs += mask.size(0)
 
@@ -515,8 +552,18 @@ def main(args):
             for p in model.parameters():
                 logging.info(p.shape, p.numel())
 
+    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
+    if args.data_range == 'gt':
+        train_data_range_dict = None
+        dev_data_range_dict = None
+    elif args.data_range == 'volume':
+        train_data_range_dict = create_data_range_dict(train_loader)
+        dev_data_range_dict = create_data_range_dict(dev_loader)
+    else:
+        raise ValueError(f'{args.data_range} is not valid')
 
     # TODO: remove this
     # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
@@ -538,12 +585,14 @@ def main(args):
     k = args.num_target_rows
 
     if args.do_train_ssim:
-        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
+        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
+                                                       True, train_data_range_dict)
         train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
         logging.info(f'TrainSSIM = [{train_ssims_str}]')
         logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
 
-    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer, False)
+    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
+                                               False, dev_data_range_dict)
     dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
@@ -562,13 +611,15 @@ def main(args):
         sorter = NeuralSort(tau=tau, hard=False)
 
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser,
-                                             writer, eps, k, sorter)
+                                             writer, eps, k, sorter, train_data_range_dict)
         # TODO: do both of these? Make more efficient?
-        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, False)
+        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
+                                                   False, dev_data_range_dict)
         # visualise(args, epoch, model, display_loader, writer)
 
         if args.do_dev_loss:
-            dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, eps, k, sorter)
+            dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, eps,
+                                               k, sorter, dev_data_range_dict)
             if not isinstance(model, str):
                 is_new_best = dev_loss < best_dev_loss
                 best_dev_loss = min(best_dev_loss, dev_loss)
@@ -584,7 +635,8 @@ def main(args):
         )
 
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer, True)
+            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer,
+                                                           True, train_data_range_dict)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
         else:
@@ -608,6 +660,8 @@ def create_arg_parser():
                         help='Dataset to use.')
     parser.add_argument('--wandb',  action='store_true',
                         help='Whether to use wandb logging for this run.')
+    parser.add_argument('--data-range', type=str, default='volume',
+                        help="Type of data range to use. Options are 'volume' and 'gt'.")
 
     # Data parameters
     parser.add_argument('--challenge', type=str, default='singlecoil',

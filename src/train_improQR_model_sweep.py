@@ -45,6 +45,28 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
+def create_data_range_dict(loader):
+    # Locate ground truths of a volume
+    gt_vol_dict = {}
+    for it, data in enumerate(loader):
+        # TODO: Use fname, slice to create state-step-dependent baseline
+        # TODO: use fname and initial loop over gt to find data range per fname
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, slice = data
+        for i, vol in enumerate(fname):
+            if vol not in gt_vol_dict:
+                gt_vol_dict[vol] = []
+            gt_vol_dict[vol].append(gt[i] * gt_std[i] + gt_mean[i])
+
+    # Find max of a volume
+    data_range_dict = {}
+    for vol, gts in gt_vol_dict.items():
+        # Shape 1 x 1 x 1 x 1
+        data_range_dict[vol] = torch.stack(gts).max().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(args.device)
+    del gt_vol_dict
+
+    return data_range_dict
+
+
 def reinforce_unordered(cost, log_p, baseline=True):
     with torch.no_grad():  # Don't compute gradients for advantage and ratio
         log_R_s, log_R_ss = compute_log_R(log_p)
@@ -60,7 +82,7 @@ def get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, r
     recon = impro_input[:, 0:1, ...]  # Other channels are uncertainty maps + other input to the impro model
     unnorm_recon = recon * gt_std + gt_mean  # Back to original scale for metric
 
-    # shape = batch
+    # shape = batch x 1
     base_score = ssim(unnorm_recon, unnorm_gt, size_average=False,
                       data_range=data_range).mean(-1).mean(-1)  # keep channel dim = 1
 
@@ -92,7 +114,7 @@ def get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, r
     return target
 
 
-def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k):
+def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k, data_range_dict):
     # TODO: try batchnorm in FC layers
     model.train()
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
@@ -104,7 +126,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     epoch_target_counts = defaultdict(lambda: 0)
 
     for it, data in enumerate(train_loader):
-        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
         # TODO: Maybe normalisation unnecessary for SSIM target?
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -116,7 +138,12 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         unnorm_gt = gt * gt_std + gt_mean
-        data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        if args.data_range == 'gt':
+            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        elif args.data_range == 'volume':
+            data_range = torch.stack([data_range_dict[vol] for vol in fname])
+        else:
+            raise ValueError(f'{args.data_range} is not valid')
 
         # Base reconstruction model forward pass
         impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -165,7 +192,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 # REINFORCE with self-baselines
                 # batch x k
                 loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
-                # batch x 1
+                # batch
                 loss = loss.sum(dim=1)
 
             elif args.estimator == 'wor':
@@ -175,14 +202,14 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             else:
                 raise ValueError(f'{args.estimator} is not a valid estimator.')
 
-            loss.mean()
+            loss = loss.mean()
             loss.backward()
 
             epoch_loss[step] += loss.item() / len(train_loader) * mask.size(0) / args.batch_size
             report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
             writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
-            if args.acq_strat == 'greedy':
+            if args.acq_strat == 'max':
                 # Acquire row for next step: GREEDY
                 _, next_rows = torch.max(logits, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
             elif args.acq_strat == 'sample':
@@ -239,7 +266,7 @@ def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
     return impro_input, zf, mean, std, mask, masked_kspace
 
 
-def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
+def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, data_range_dict):
     # TODO: sorter
     """
     Evaluates using loss function: i.e. how close are the predicted improvements to the actual improvements.
@@ -251,7 +278,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
 
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
             # TODO: Maybe normalisation unnecessary for SSIM target?
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
@@ -263,7 +290,12 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
             gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             unnorm_gt = gt * gt_std + gt_mean
-            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            if args.data_range == 'gt':
+                data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            elif args.data_range == 'volume':
+                data_range = torch.stack([data_range_dict[vol] for vol in fname])
+            else:
+                raise ValueError(f'{args.data_range} is not valid')
 
             # Base reconstruction model forward pass
             impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -312,7 +344,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
 
                 writer.add_scalar('DevLoss_step{}'.format(step), loss.item(), global_step + it)
 
-                if args.acq_strat == 'greedy':
+                if args.acq_strat == 'max':
                     # Acquire row for next step: GREEDY
                     _, next_rows = torch.max(logits, dim=1)  # TODO: is greedy a good idea? Acquire multiple maybe?
                 elif args.acq_strat == 'sample':
@@ -331,7 +363,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k):
     return np.mean(epoch_loss), time.perf_counter() - start
 
 
-def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
+def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, data_range_dict):
     """
     Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
     """
@@ -347,7 +379,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     start = time.perf_counter()
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
             # TODO: Maybe normalisation unnecessary for SSIM target?
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
@@ -359,7 +391,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
             gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             unnorm_gt = gt * gt_std + gt_mean
-            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            if args.data_range == 'gt':
+                data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            elif args.data_range == 'volume':
+                data_range = torch.stack([data_range_dict[vol] for vol in fname])
+            else:
+                raise ValueError(f'{args.data_range} is not valid')
 
             tbs += mask.size(0)
 
@@ -377,7 +414,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
                 output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
                 epoch_outputs[step + 1].append(output.to('cpu').numpy())
 
-                if args.acq_strat == 'greedy':
+                if args.acq_strat == 'max':
                     # Greedy policy (size = batch)
                     # Only acquire rows that have not been already acquired
                     # TODO: Could just take the max of the masked output
@@ -494,10 +531,18 @@ def main(args):
         logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
             count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
 
+    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
-
-    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    if args.data_range == 'gt':
+        train_data_range_dict = None
+        dev_data_range_dict = None
+    elif args.data_range == 'volume':
+        train_data_range_dict = create_data_range_dict(train_loader)
+        dev_data_range_dict = create_data_range_dict(dev_loader)
+    else:
+        raise ValueError(f'{args.data_range} is not valid')
 
     # Training and evaluation
     k = args.num_target_rows
@@ -510,28 +555,33 @@ def main(args):
     # dev_loader = [dev_batch] * 1
 
     if args.do_train_ssim:
-        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
+        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
+                                                       True, train_data_range_dict)
         train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
         logging.info(f'TrainSSIM = [{train_ssims_str}]')
         logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
 
-    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer, False)
+    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
+                                               False, dev_data_range_dict)
     dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
     logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
-        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, k)
-        dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k)
-        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, False)
+        train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer,
+                                             k, train_data_range_dict)
+        dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, dev_data_range_dict)
+        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
+                                                   False, dev_data_range_dict)
 
         logging.info(
             f'Epoch = [{epoch:3d}/{args.num_epochs:3d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
 
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer, True)
+            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer,
+                                                           True, train_data_range_dict)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
         else:
@@ -555,6 +605,9 @@ def create_arg_parser():
                         help='Which challenge for fastMRI training.')
     parser.add_argument('--data-path', type=pathlib.Path, default='/var/scratch/tbbakker/data/fastMRI/singlecoil/',
                         help='Path to the dataset. Required for fastMRI training.')
+    parser.add_argument('--data-range', type=str, default='volume',
+                        help="Type of data range to use. Options are 'volume' and 'gt'.")
+
     parser.add_argument('--sample-rate', type=float, default=0.04,
                         help='Fraction of total volumes to include')
     parser.add_argument('--acquisition', type=str, default='CORPD_FBK',
@@ -578,7 +631,7 @@ def create_arg_parser():
 
     parser.add_argument('--estimator', type=str, default='wr',
                         help='Which estimator to use: with replacement (wr), or without replacement (wor)')
-    parser.add_argument('--acq_strat', type=str, default='greedy',
+    parser.add_argument('--acq_strat', type=str, default='max',
                         help='Which acquisition strategy to use: greedy or sample')
 
     parser.add_argument('--exp-dir', type=pathlib.Path, default='/var/scratch/tbbakker/mrimpro/sweep_results/',

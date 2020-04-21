@@ -520,4 +520,5 @@ if __name__ == '__main__':
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False
+    # TODO: DEPRECATED
     main(args)

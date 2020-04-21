@@ -43,6 +43,67 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
+def acquire_rows_in_batch_parallel(k, mk, mask, to_acquire):
+    # TODO: This is a version of acquire_new_zf_exp_batch returns mask instead of zf: integrate this nicely
+    if mask.size(1) == mk.size(1) == to_acquire.size(1):
+        # We are already in a trajectory: every row in to_acquire corresponds to an existing trajectory that
+        # we have sampled the next row for.
+        m_exp = mask
+        mk_exp = mk
+    else:
+        # We have to initialise trajectories: every row in to_acquire corresponds to the start of a trajectory.
+        m_exp = mask.repeat(1, to_acquire.size(1), 1, 1, 1)
+        mk_exp = mk.repeat(1, to_acquire.size(1), 1, 1, 1)
+    # Loop over slices in batch
+    for sl, rows in enumerate(to_acquire):
+        # Loop over indices to acquire
+        for index, row in enumerate(rows):
+            m_exp[sl, index, :, row.item(), :] = 1.
+            mk_exp[sl, index, :, row.item(), :] = k[sl, 0, :, row.item(), :]
+    return m_exp, mk_exp
+
+
+def acquire_row(kspace, masked_kspace, next_rows, mask):
+    zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
+    # Don't forget to change mask for impro_model (necessary if impro model uses mask)
+    # Also need to change masked kspace for recon model (getting correct next-step zf)
+    # TODO: maybe do this in the acquire_new_zf_batch() function. Doesn't fit with other functions of same
+    #  description, but this one is particularly used for this acquisition loop.
+    for sl, next_row in enumerate(next_rows):
+        mask[sl, :, :, next_row, :] = 1.
+        masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
+    # Get new reconstruction for batch
+    return zf, mean, std, mask, masked_kspace
+
+
+def acquire_row_and_get_new_recon(kspace, masked_kspace, next_rows, mask, recon_model):
+    zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask)
+    impro_input = create_impro_model_input(args, recon_model, zf, mask)  # TODO: args is global here!
+    return impro_input, zf, mean, std, mask, masked_kspace
+
+
+def create_data_range_dict(loader):
+    # Locate ground truths of a volume
+    gt_vol_dict = {}
+    for it, data in enumerate(loader):
+        # TODO: Use fname, slice to create state-step-dependent baseline
+        # TODO: use fname and initial loop over gt to find data range per fname
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, slice = data
+        for i, vol in enumerate(fname):
+            if vol not in gt_vol_dict:
+                gt_vol_dict[vol] = []
+            gt_vol_dict[vol].append(gt[i] * gt_std[i] + gt_mean[i])
+
+    # Find max of a volume
+    data_range_dict = {}
+    for vol, gts in gt_vol_dict.items():
+        # Shape 1 x 1 x 1 x 1
+        data_range_dict[vol] = torch.stack(gts).max().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(args.device)
+    del gt_vol_dict
+
+    return data_range_dict
+
+
 def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, unnorm_gt, data_range, k):
     batch_mk = masked_kspace.view(mask.size(0) * k, 1, res, res, 2)
     # Get new zf: shape = (batch . num_rows x 1 x res x res)
@@ -74,7 +135,7 @@ def get_policy_probs(output, unacquired):
     return probs
 
 
-def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, baseline):
+def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, baseline, data_range_dict):
     model.train()
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -86,11 +147,19 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
     # Initialise baseline if it doesn't exist yet (should only happen on epoch 0)
     if args.estimator in ['start_adaptive', 'full_step']:
-        if baseline is None:
-            baseline = torch.zeros(args.acquisition_steps)
+        if baseline is None:  # only initialise if baseline is not already initialised
+            if args.baseline_type == 'step':
+                baseline = torch.zeros(args.acquisition_steps)
+            elif args.baseline_type == 'statestep':
+                # Will become dict of volumes, slice indices, acquisition steps : baseline values
+                baseline = {}
+            else:
+                raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
     for it, data in enumerate(train_loader):
-        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+        # TODO: Use fname, slice to create state-step-dependent baseline
+        kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, sl_idx = data
+
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
         masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
@@ -101,7 +170,12 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
         gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         unnorm_gt = gt * gt_std + gt_mean
-        data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        if args.data_range == 'gt':
+            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+        elif args.data_range == 'volume':
+            data_range = torch.stack([data_range_dict[vol] for vol in fname])
+        else:
+            raise ValueError(f'{args.data_range} is not valid')
 
         # Base reconstruction model forward pass to get base score
         impro_input = create_impro_model_input(args, recon_model, zf, mask)
@@ -202,16 +276,42 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
                     # Store returns in final index of reward tensor (returns = reward_tensor[:, :, -1])
                     # reward_tensor[:, :, step] = scores - base_score
-                    reward_list.append(scores - base_score)
+                    returns = scores - base_score
+                    reward_list.append(returns)
 
-                    # Keep running average step baseline
-                    if baseline[step] == 0:  # Need to initialise
-                        baseline[step] = (scores - base_score).mean()
-                    baseline[step] = baseline[step] * 0.99 + 0.01 * (scores - base_score).mean()
+                    if args.baseline_type == 'step':
+                        # Keep running average step baseline
+                        if baseline[step] == 0:  # Need to initialise
+                            baseline[step] = returns.mean()
+                        baseline[step] = baseline[step] * 0.99 + 0.01 * returns.mean()
+                        # Calculate loss
+                        # REINFORCE on return
+                        loss = -1 * (reward_list[-1] - baseline[-1]) * torch.sum(torch.stack(logprob_list), dim=0)
+                    elif args.baseline_type == 'statestep':
+                        for i, (vol, sl) in enumerate(zip(fname, sl_idx)):
+                            sl = sl.item()
+                            # Initialise nested dictionary if not exist
+                            if vol not in baseline:
+                                baseline[vol] = {}
+                            if sl not in baseline[vol]:  # Although we only update the last (step = last step here)
+                                baseline[vol][sl] = torch.zeros(args.acquisition_steps)
 
-                    # Calculate loss
-                    # REINFORCE on return with 0 baseline
-                    loss = -1 * (reward_list[-1] - baseline[-1]) * torch.sum(torch.stack(logprob_list), dim=0)
+                            # If just initialised, set baseline to reward
+                            if baseline[vol][sl][step] == 0:
+                                baseline[vol][sl][step] = returns[i].mean()
+                            else:  # Update baseline
+                                baseline[vol][sl][step] = baseline[vol][sl][step] * .99 + 0.01 * returns[i].mean()
+
+                        # Calculate loss
+                        loss = 0
+                        for i, (vol, sl) in enumerate(zip(fname, sl_idx)):
+                            sl = sl.item()
+                            loss += -1 * ((reward_list[-1] - baseline[vol][sl][-1]) *
+                                          torch.sum(torch.stack(logprob_list), dim=0))
+                        loss = loss / (i + 1)
+                    else:
+                        raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
+
                     loss = loss.mean()  # Average over batch and trajectories
                     loss.backward()
 
@@ -225,11 +325,42 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                                   gt_mean, gt_std, unnorm_gt, data_range, k)
                 # Store rewards shape = (batch x num_trajectories)
                 # reward_tensor[:, :, step] = scores - base_score
-                reward_list.append(scores - base_score)
+                reward = scores - base_score
+                reward_list.append(reward)
 
                 if args.greedy:  # REINFORCE greedy with step baseline
-                    # Use reward within a step
-                    loss = -1 * (reward_list[step] - baseline[step]) * logprobs
+                    if args.baseline_type == 'step':
+                        # Keep running average step baseline
+                        if baseline[step] == 0:  # Need to initialise
+                            baseline[step] = reward.mean()
+                        baseline[step] = baseline[step] * 0.99 + 0.01 * reward.mean()
+                        # Use reward within a step
+                        loss = -1 * (reward_list[step] - baseline[step]) * logprobs
+                    elif args.baseline_type == 'statestep':
+                        # Update baseline per state (slice) and per step
+                        for i, (vol, sl) in enumerate(zip(fname, sl_idx)):
+                            sl = sl.item()
+                            # Initialise nested dictionary if not exist
+                            if vol not in baseline:
+                                baseline[vol] = {}
+                            if sl not in baseline[vol]:
+                                baseline[vol][sl] = torch.zeros(args.acquisition_steps)
+
+                            # If just initialised, set baseline to reward
+                            if baseline[vol][sl][step] == 0:
+                                baseline[vol][sl][step] = reward[i].mean()
+                            else:  # Update baseline
+                                baseline[vol][sl][step] = (baseline[vol][sl][step] * .99 + 0.01 * reward[i].mean())
+
+                        # Calculate loss
+                        loss = 0
+                        for i, (vol, sl) in enumerate(zip(fname, sl_idx)):
+                            sl = sl.item()
+                            loss += -1 * (reward_list[step] - baseline[vol][sl][step]) * logprobs
+                        loss = loss / (i + 1)
+                    else:
+                        raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
+
                     loss = loss.mean()
                     loss.backward()
 
@@ -238,10 +369,27 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
                 if args.estimator == 'full_step':
-                    # Keep running average step baseline
-                    if baseline[step] == 0:  # Need to initialise
-                        baseline[step] = (scores - base_score).mean()
-                    baseline[step] = baseline[step] * 0.99 + 0.01 * (scores - base_score).mean()
+                    if args.baseline_type == 'step':
+                        # Keep running average step baseline
+                        if baseline[step] == 0:  # Need to initialise
+                            baseline[step] = reward.mean()
+                        baseline[step] = baseline[step] * 0.99 + 0.01 * reward.mean()
+                    elif args.baseline_type == 'statestep':
+                        for i, (vol, sl) in enumerate(zip(fname, sl_idx)):
+                            sl = sl.item()
+                            # Initialise nested dictionary if not exist
+                            if vol not in baseline:
+                                baseline[vol] = {}
+                            if sl not in baseline[vol]:
+                                baseline[vol][sl] = torch.zeros(args.acquisition_steps)
+
+                            # If just initialised, set baseline to reward
+                            if baseline[vol][sl][step] == 0:
+                                baseline[vol][sl][step] = reward[i].mean()
+                            else:  # Update baseline
+                                baseline[vol][sl][step] = baseline[vol][sl][step] * .99 + 0.01 * reward[i].mean()
+                    else:
+                        raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
                 # Set new base_score (we learn improvements)
                 base_score = scores
@@ -284,14 +432,26 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                         for step, logprobs in enumerate(logprob_list):
                             # REINFORCE nongreedy with step baseline
                             # GPOMDP: use return from current state onward
-                            loss = -1 * (reward_tensor[step:].sum(dim=0) - baseline[step:].sum()) * logprobs
+                            if args.baseline_type == 'step':
+                                loss = -1 * (reward_tensor[step:].sum(dim=0) - baseline[step:].sum()) * logprobs
+                            elif args.baseline_type == 'statestep':
+                                loss = 0
+                                for i, (vol, sl) in enumerate(zip(fname, sl_idx)):
+                                    sl = sl.item()
+                                    loss += -1 * (reward_tensor[step:].sum(dim=0) -
+                                                  baseline[vol][sl][step:].sum()) * logprobs
+
+                                loss = loss / (i + 1)
+                            else:
+                                raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
+
                             loss = loss.mean()  # Average over batch and trajectories
                             loss.backward()
 
                             epoch_loss[step] += loss.item() / len(train_loader) * gt.size(0) / args.batch_size
                             report_loss[step] += loss.item() / args.report_interval * gt.size(0) / args.batch_size
                             writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
-                    elif args.greedy:
+                    elif args.greedy:  # Complete control flow
                         pass
                     else:
                         raise ValueError('Something went wrong.')
@@ -323,46 +483,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     return np.mean(epoch_loss), time.perf_counter() - start_epoch, baseline
 
 
-def acquire_rows_in_batch_parallel(k, mk, mask, to_acquire):
-    # TODO: This is a version of acquire_new_zf_exp_batch returns mask instead of zf: integrate this nicely
-    if mask.size(1) == mk.size(1) == to_acquire.size(1):
-        # We are already in a trajectory: every row in to_acquire corresponds to an existing trajectory that
-        # we have sampled the next row for.
-        m_exp = mask
-        mk_exp = mk
-    else:
-        # We have to initialise trajectories: every row in to_acquire corresponds to the start of a trajectory.
-        m_exp = mask.repeat(1, to_acquire.size(1), 1, 1, 1)
-        mk_exp = mk.repeat(1, to_acquire.size(1), 1, 1, 1)
-    # Loop over slices in batch
-    for sl, rows in enumerate(to_acquire):
-        # Loop over indices to acquire
-        for index, row in enumerate(rows):
-            m_exp[sl, index, :, row.item(), :] = 1.
-            mk_exp[sl, index, :, row.item(), :] = k[sl, 0, :, row.item(), :]
-    return m_exp, mk_exp
-
-
-def acquire_row(kspace, masked_kspace, next_rows, mask):
-    zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
-    # Don't forget to change mask for impro_model (necessary if impro model uses mask)
-    # Also need to change masked kspace for recon model (getting correct next-step zf)
-    # TODO: maybe do this in the acquire_new_zf_batch() function. Doesn't fit with other functions of same
-    #  description, but this one is particularly used for this acquisition loop.
-    for sl, next_row in enumerate(next_rows):
-        mask[sl, :, :, next_row, :] = 1.
-        masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
-    # Get new reconstruction for batch
-    return zf, mean, std, mask, masked_kspace
-
-
-def acquire_row_and_get_new_recon(kspace, masked_kspace, next_rows, mask, recon_model):
-    zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask)
-    impro_input = create_impro_model_input(args, recon_model, zf, mask)  # TODO: args is global here!
-    return impro_input, zf, mean, std, mask, masked_kspace
-
-
-def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
+def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, data_range_dict):
     """
     Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
     """
@@ -378,7 +499,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
     k = args.num_dev_trajectories
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
-            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, _, _ = data
+            kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, sl_idx = data
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(args.device)
             masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
@@ -389,7 +510,12 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train):
             gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
             unnorm_gt = gt * gt_std + gt_mean
-            data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            if args.data_range == 'gt':
+                data_range = unnorm_gt.max(dim=-1, keepdim=True)[0].max(dim=-2, keepdim=True)[0]
+            elif args.data_range == 'volume':
+                data_range = torch.stack([data_range_dict[vol] for vol in fname])
+            else:
+                raise ValueError(f'{args.data_range} is not valid')
 
             tbs += mask.size(0)
 
@@ -545,10 +671,18 @@ def main(args):
         logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
             count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
 
+    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
-
-    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    if args.data_range == 'gt':
+        train_data_range_dict = None
+        dev_data_range_dict = None
+    elif args.data_range == 'volume':
+        train_data_range_dict = create_data_range_dict(train_loader)
+        dev_data_range_dict = create_data_range_dict(dev_loader)
+    else:
+        raise ValueError(f'{args.data_range} is not valid')
 
     # # TODO: remove this
     # For fully reproducible behaviour: set shuffle_train=False in create_data_loaders
@@ -558,30 +692,35 @@ def main(args):
     # dev_loader = [dev_batch] * 1
 
     # if args.do_train_ssim:
-    #     train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer, True)
+    #     train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
+    #                                                    True, train_data_range_dict)
     #     train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
     #     logging.info(f'TrainSSIM = [{train_ssims_str}]')
     #     logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
     #
-    # dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer, False)
+    # dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
+    #                                            False, dev_data_range_dict)
     # dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
     # logging.info(f'  DevSSIM = [{dev_ssims_str}]')
     # logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
     baseline = None
+
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step(epoch)
-        train_loss, train_time, baseline = train_epoch(args, epoch, recon_model, model, train_loader,
-                                                       optimiser, writer, baseline)
+        train_loss, train_time, baseline = train_epoch(args, epoch, recon_model, model, train_loader, optimiser,
+                                                       writer, baseline, train_data_range_dict)
         dev_loss, dev_loss_time = 0, 0
-        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, False)
+        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
+                                                   False, dev_data_range_dict)
 
         logging.info(
             f'Epoch = [{epoch:3d}/{args.num_epochs:3d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
 
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer, True)
+            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer, True,
+                                                           train_data_range_dict)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
         else:
@@ -605,6 +744,9 @@ def create_arg_parser():
                         help='Which challenge for fastMRI training.')
     parser.add_argument('--data-path', type=pathlib.Path, default='/var/scratch/tbbakker/data/fastMRI/singlecoil/',
                         help='Path to the dataset. Required for fastMRI training.')
+    parser.add_argument('--data-range', type=str, default='volume',
+                        help="Type of data range to use. Options are 'volume' and 'gt'.")
+
     parser.add_argument('--sample-rate', type=float, default=0.04,
                         help='Fraction of total volumes to include')
     parser.add_argument('--acquisition', type=str, default='CORPD_FBK',
@@ -621,8 +763,11 @@ def create_arg_parser():
                         'improvement model checkpoint.')
     parser.add_argument('--estimator', default='start_adaptive',
                         help='How to estimate gradients.')
+    parser.add_argument('--baseline-type', type=str, default='step',
+                        help="Type of baseline to use. Options are 'step' and 'statestep'.")
     parser.add_argument('--num-trajectories', type=int, default=10, help='Number of trajectories to sample for train.')
     parser.add_argument('--num-dev-trajectories', type=int, default=10, help='Number of trajectories to sample eval.')
+
     parser.add_argument('--report-interval', type=int, default=100, help='Period of loss reporting')
     parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
@@ -709,7 +854,7 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    args.wandb = True
+    args.wandb = False
 
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
