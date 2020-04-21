@@ -6,7 +6,7 @@
 
 echo "Starting"
 
-conda activate fastmri
+source /var/scratch/tbbakker/anaconda3/bin/activate fastmri
 nvidia-smi
 
 # Nongreedy with statestep baseline
