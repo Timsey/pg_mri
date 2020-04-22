@@ -671,7 +671,14 @@ def main(args):
         logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
             count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
 
-    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    if args.scheduler_type == 'step':
+        scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    elif args.scheduler_type == 'multistep':
+        if not isinstance(args.lr_multi_step_size, list):
+            args.lr_multi_step_size = [args.lr_multi_step_size]
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimiser, args.lr_multi_step_size, args.lr_gamma)
+    else:
+        raise ValueError("{} is not a valid scheduler choice ('step', 'multistep')".format(args.scheduler_type))
 
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
@@ -811,6 +818,15 @@ def create_arg_parser():
     parser.add_argument('--do-train-ssim', type=str2bool, default=True,
                         help='Whether to compute SSIM values on training data.')
 
+    parser.add_argument('--lr-step-size', type=int, default=40,
+                        help='Period of learning rate decay')
+    parser.add_argument('--lr-multi-step-size', nargs='+', type=int, default=40,
+                        help='Period of learning rate decay')
+    parser.add_argument('--lr-gamma', type=float, default=0.1,
+                        help='Multiplicative factor of learning rate decay')
+    parser.add_argument('--scheduler-type', type=str, choices=['step', 'multistep'], default='step',
+                        help='Number of training epochs')
+
     # Sweep params
     parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
 
@@ -821,10 +837,6 @@ def create_arg_parser():
 
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--lr-step-size', type=int, default=40,
-                        help='Period of learning rate decay')
-    parser.add_argument('--lr-gamma', type=float, default=0.1,
-                        help='Multiplicative factor of learning rate decay')
     return parser
 
 
@@ -854,7 +866,7 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    args.wandb = True
+    args.wandb = False
 
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
