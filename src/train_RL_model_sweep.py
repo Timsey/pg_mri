@@ -871,7 +871,7 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    args.wandb = False
+    args.wandb = True
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
 
