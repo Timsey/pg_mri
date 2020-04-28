@@ -175,7 +175,8 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
         sample_rate=args.sample_rate,
         challenge=args.challenge,
         acquisition=args.acquisition,
-        center_volume=args.center_volume
+        center_volume=args.center_volume,
+        state=args.train_state
     )
     # use_seed=True ensures the same mask is used for all slices in a given volume every time. This means the
     # development set stays the same with every use. Note that this also means any metrics based on the mask will
@@ -188,7 +189,8 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
         sample_rate=dev_sample_rate,
         challenge=args.challenge,
         acquisition=args.acquisition,
-        center_volume=args.center_volume
+        center_volume=args.center_volume,
+        state=args.dev_state
     )
     # test_data = SliceData(
     #     root=args.data_path / f'{args.challenge}_test_al',

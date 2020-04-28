@@ -23,6 +23,7 @@ from src.helpers.utils import (add_mask_params, save_json, check_args_consistenc
                                count_trainable_parameters, count_untrainable_parameters, plot_grad_flow,
                                save_sensitivity)
 from src.helpers.data_loading import create_data_loaders
+from src.helpers.states import DEV_STATE, TRAIN_STATE
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
                                                 recon_model_forward_pass, create_impro_model_input, load_recon_model)
 from src.impro_models.impro_model_utils import (load_impro_model, build_impro_model, build_optim, save_model,
@@ -800,6 +801,9 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
+
+    args.train_state = TRAIN_STATE
+    args.dev_state = DEV_STATE
 
     if args.wandb:
         if args.resume_wandb:

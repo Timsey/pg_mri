@@ -31,6 +31,7 @@ from src.helpers.torch_metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
+from src.helpers.states import DEV_STATE, TRAIN_STATE
 from src.recon_models.recon_model_utils import (get_new_zf, acquire_new_zf_batch, create_impro_model_input,
                                                 load_recon_model)
 from src.impro_models.impro_model_utils import build_impro_model, build_optim, save_model, impro_model_forward_pass
@@ -698,18 +699,18 @@ def main(args):
     # dev_batch = next(iter(dev_loader))
     # dev_loader = [dev_batch] * 1
 
-    # if args.do_train_ssim:
-    #     train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
-    #                                                    True, train_data_range_dict)
-    #     train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
-    #     logging.info(f'TrainSSIM = [{train_ssims_str}]')
-    #     logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
-    #
-    # dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
-    #                                            False, dev_data_range_dict)
-    # dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
-    # logging.info(f'  DevSSIM = [{dev_ssims_str}]')
-    # logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+    if args.do_train_ssim:
+        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
+                                                       True, train_data_range_dict)
+        train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+        logging.info(f'TrainSSIM = [{train_ssims_str}]')
+        logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
+
+    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
+                                               False, dev_data_range_dict)
+    dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+    logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+    logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
     baseline = None
 
@@ -837,6 +838,7 @@ def create_arg_parser():
 
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+
     return parser
 
 
@@ -864,10 +866,12 @@ if __name__ == '__main__':
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
 
+    args.train_state = TRAIN_STATE
+    args.dev_state = DEV_STATE
+
     args.use_recon_mask_params = False
 
-    args.wandb = True
-
+    args.wandb = False
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
 

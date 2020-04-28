@@ -32,6 +32,7 @@ from src.helpers.torch_metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters)
 from src.helpers.data_loading import create_data_loaders
+from src.helpers.states import DEV_STATE, TRAIN_STATE
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
                                                 recon_model_forward_pass, create_impro_model_input, load_recon_model)
 from src.impro_models.impro_model_utils import build_impro_model, build_optim, save_model, impro_model_forward_pass
@@ -714,8 +715,10 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    args.wandb = True
+    args.train_state = TRAIN_STATE
+    args.dev_state = DEV_STATE
 
+    args.wandb = True
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
 
