@@ -1,5 +1,15 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
+#SBATCH --job-name=nogreedy
+#SBATCH --gres=gpu:4  # Hoeveel gpu heb je nodig?
+#SBATCH -C GTX980Ti|GTX1080Ti|TitanX  # Welke gpus heb je nodig?
+
+echo "Starting"
+
+source /var/scratch/tbbakker/anaconda3/bin/activate fastmri
+nvidia-smi
+
+# Policy model original
 CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages python -m src.train_improQR_model_sweep \
 --dataset fastmri --data-path /var/scratch/tbbakker/data/fastMRI/singlecoil/ --exp-dir /var/scratch/tbbakker/mrimpro/results/ --resolution 128 \
 --recon-model-checkpoint /var/scratch/tbbakker/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_PD_cvol_ch16_b64_symk/model.pt --recon-model-name nounc \
