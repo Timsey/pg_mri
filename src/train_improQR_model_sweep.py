@@ -686,6 +686,8 @@ def create_arg_parser():
                         help='Period of learning rate decay')
     parser.add_argument('--lr-gamma', type=float, default=0.1,
                         help='Multiplicative factor of learning rate decay')
+    parser.add_argument('--use-data-state', type=str2bool, default=False,
+                        help='Whether to use fixed data state for random data selection.')
 
     parser.add_argument('--maskconv-depth', type=int, default=3, help='Number of layers in maskconv model.')
     return parser
@@ -698,16 +700,21 @@ if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
 
     args = create_arg_parser().parse_args()
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    if args.seed != 0:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
 
     args.use_recon_mask_params = False
 
-    args.train_state = TRAIN_STATE
-    args.dev_state = DEV_STATE
+    if args.use_data_state:
+        args.train_state = TRAIN_STATE
+        args.dev_state = DEV_STATE
+    else:
+        args.train_state = None
+        args.dev_state = None
 
     args.wandb = True
     if args.wandb:

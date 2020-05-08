@@ -890,6 +890,8 @@ def create_arg_parser():
 
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--use-data-state', type=str2bool, default=False,
+                        help='Whether to use fixed data state for random data selection.')
 
     return parser
 
@@ -903,14 +905,19 @@ if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
 
     args = create_arg_parser().parse_args()
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    if args.seed != 0:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
 
-    args.train_state = TRAIN_STATE
-    args.dev_state = DEV_STATE
+    if args.use_data_state:
+        args.train_state = TRAIN_STATE
+        args.dev_state = DEV_STATE
+    else:
+        args.train_state = None
+        args.dev_state = None
 
     args.use_recon_mask_params = False
 

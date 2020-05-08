@@ -15,7 +15,7 @@ from tensorboardX import SummaryWriter
 
 from src.helpers.torch_metrics import ssim
 
-from src.helpers.utils import (add_mask_params, save_json, check_args_consistency)
+from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, str2bool, str2none)
 from src.helpers.data_loading import create_data_loaders
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
                                                 recon_model_forward_pass, load_recon_model)
@@ -509,7 +509,7 @@ def create_arg_parser():
                         help='Path to the dataset. Required for fastMRI training.')
     parser.add_argument('--sample-rate', type=float, default=1.,
                         help='Fraction of total volumes to include')
-    parser.add_argument('--acquisition', type=str, default='CORPD_FBK',
+    parser.add_argument('--acquisition', type=str2none, default='CORPD_FBK',
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
 
@@ -556,6 +556,9 @@ def create_arg_parser():
 
     parser.add_argument('--verbose', type=int, default=1,
                         help='Set verbosity level. Lowest=0, highest=4."')
+    parser.add_argument('--use-data-state', type=str2bool, default=False,
+                        help='Whether to use fixed data state for random data selection.')
+
     return parser
 
 
@@ -566,17 +569,22 @@ if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
 
     args = create_arg_parser().parse_args()
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    if args.seed != 0:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
     if args.device == 'cuda':
         torch.cuda.manual_seed(args.seed)
 
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
 
-    args.train_state = TRAIN_STATE
-    args.dev_state = DEV_STATE
+    if args.use_data_state:
+        args.train_state = TRAIN_STATE
+        args.dev_state = DEV_STATE
+    else:
+        args.train_state = None
+        args.dev_state = None
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False
     main(args)
