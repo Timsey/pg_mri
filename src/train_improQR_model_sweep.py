@@ -30,7 +30,7 @@ sys.path.insert(0, '/var/scratch/tbbakker/mrimpro/')  # noqa: F401
 from src.helpers.gumbel import compute_log_R
 from src.helpers.torch_metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
-                               count_trainable_parameters, count_untrainable_parameters)
+                               count_trainable_parameters, count_untrainable_parameters, str2bool, str2none)
 from src.helpers.data_loading import create_data_loaders
 from src.helpers.states import DEV_STATE, TRAIN_STATE
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
@@ -611,7 +611,7 @@ def create_arg_parser():
 
     parser.add_argument('--sample-rate', type=float, default=0.04,
                         help='Fraction of total volumes to include')
-    parser.add_argument('--acquisition', type=str, default='CORPD_FBK',
+    parser.add_argument('--acquisition', type=str2none, default='CORPD_FBK',
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path,
@@ -686,18 +686,9 @@ def create_arg_parser():
                         help='Period of learning rate decay')
     parser.add_argument('--lr-gamma', type=float, default=0.1,
                         help='Multiplicative factor of learning rate decay')
+
+    parser.add_argument('--maskconv-depth', type=int, default=3, help='Number of layers in maskconv model.')
     return parser
-
-
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
 if __name__ == '__main__':

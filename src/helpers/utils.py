@@ -6,6 +6,26 @@ from matplotlib.lines import Line2D
 from torchvision.utils import save_image
 
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise ValueError('Boolean value expected.')
+
+
+def str2none(v):
+    if v is None:
+        return v
+    if v.lower() == 'none':
+        return None
+    else:
+        return v
+
+
 def save_json(path, data):
     with open(path, 'w') as f:
         json.dump(data, f, indent=4)

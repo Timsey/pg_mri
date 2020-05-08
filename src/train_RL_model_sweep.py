@@ -29,7 +29,7 @@ sys.path.insert(0, '/var/scratch/tbbakker/mrimpro/')  # noqa: F401
 
 from src.helpers.torch_metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
-                               count_trainable_parameters, count_untrainable_parameters)
+                               count_trainable_parameters, count_untrainable_parameters, str2bool, str2none)
 from src.helpers.data_loading import create_data_loaders
 from src.helpers.states import DEV_STATE, TRAIN_STATE
 from src.recon_models.recon_model_utils import (get_new_zf, acquire_new_zf_batch, create_impro_model_input,
@@ -154,6 +154,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             elif args.baseline_type == 'statestep':
                 # Will become dict of volumes, slice indices, acquisition steps : baseline values
                 baseline = {}
+            elif args.baseline_type == 'self':
+                baseline = None
+            elif args.baseline_type == 'selfstep':
+                baseline = None
             else:
                 raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
@@ -224,10 +228,11 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     # Sampling without replacement
                     actions = torch.multinomial(probs, k, replacement=False)
                 elif args.estimator in ['start_adaptive', 'full_step']:  # REINFORCE
-                    # Sampling with replacement
-                    actions = torch.multinomial(probs, k, replacement=True)
-                    # if epoch == 10:
-                    #     a = 1
+                    if args.baseline_type == 'self':  # For now we only support sampling with replacement
+                        actions = torch.multinomial(probs, k, replacement=False)
+                    else:
+                        # Sampling with replacement
+                        actions = torch.multinomial(probs, k, replacement=True)
             else:  # Here policy has batch_shape = (batch x num_trajectories), so we just need a sample
                 # Since we're only taking a single sample per trajectory, this is 'without replacement'
                 policy = torch.distributions.Categorical(probs)
@@ -310,6 +315,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                             loss += -1 * ((reward_list[-1] - baseline[vol][sl][-1]) *
                                           torch.sum(torch.stack(logprob_list), dim=0))
                         loss = loss / (i + 1)
+                    elif args.baseline_type == 'self':
+                        pass
+                    elif args.baseline_type == 'selfstep':
+                        pass
                     else:
                         raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
@@ -359,6 +368,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                             sl = sl.item()
                             loss += -1 * (reward_list[step] - baseline[vol][sl][step]) * logprobs
                         loss = loss / (i + 1)
+                    elif args.baseline_type == 'self':
+                        pass
+                    elif args.baseline_type == 'selfstep':
+                        pass
                     else:
                         raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
@@ -389,6 +402,10 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                 baseline[vol][sl][step] = reward[i].mean()
                             else:  # Update baseline
                                 baseline[vol][sl][step] = baseline[vol][sl][step] * .99 + 0.01 * reward[i].mean()
+                    elif args.baseline_type == 'self':
+                        pass
+                    elif args.baseline_type == 'selfstep':
+                        pass
                     else:
                         raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
@@ -441,13 +458,48 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                     sl = sl.item()
                                     loss += -1 * (reward_tensor[step:].sum(dim=0) -
                                                   baseline[vol][sl][step:].sum()) * logprobs
-
                                 loss = loss / (i + 1)
+                            elif args.baseline_type == 'self':
+                                # Loss with self-baselines from other trajectories
+                                # Only have loss for final step
+                                if step != len(logprob_list) - 1:
+                                    loss = torch.tensor(0.)
+                                else:
+                                    # batch x num_trajectories
+                                    return_tensor = reward_tensor.sum(dim=0)
+                                    # batch x 1
+                                    avg_return = torch.mean(return_tensor, dim=1, keepdim=True)
+                                    # steps x batch x num_trajectories
+                                    logprob_tensor = torch.stack(logprob_list)
+                                    # batch x num_trajectories
+                                    logprob_tensor_sum = logprob_tensor.sum(0)
+                                    # Get number of trajectories for correct average (see Wouter's paper)
+                                    num_traj = logprob_tensor.size(-1)
+                                    # REINFORCE with self-baselines
+                                    # batch x k
+                                    loss = -1 * (logprob_tensor_sum * (return_tensor - avg_return)) / (num_traj - 1)
+                                    # batch
+                                    loss = loss.sum(dim=1)
+                                    loss = loss.mean()
+                                    loss.backward()
+                            elif args.baseline_type == 'selfstep':
+                                # step x batch x 1
+                                avg_rewards_tensor = torch.mean(reward_tensor, dim=2, keepdim=True)
+                                # Get number of trajectories for correct average (see Wouter's paper)
+                                num_traj = logprobs.size(-1)
+                                # REINFORCE with self-baselines
+                                # batch x k
+                                loss = -1 * (logprobs * torch.sum(
+                                    (reward_tensor[step:, :, :] -
+                                     avg_rewards_tensor[step:, :, :]), dim=0)) / (num_traj - 1)
+                                # batch
+                                loss = loss.sum(dim=1)
                             else:
                                 raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
-                            loss = loss.mean()  # Average over batch and trajectories
-                            loss.backward()
+                            if args.baseline_type != 'self':
+                                loss = loss.mean()  # Average over batch (and trajectories except when self baseline)
+                                loss.backward()  # Store gradients
 
                             epoch_loss[step] += loss.item() / len(train_loader) * gt.size(0) / args.batch_size
                             report_loss[step] += loss.item() / args.report_interval * gt.size(0) / args.batch_size
@@ -757,7 +809,7 @@ def create_arg_parser():
 
     parser.add_argument('--sample-rate', type=float, default=0.04,
                         help='Fraction of total volumes to include')
-    parser.add_argument('--acquisition', type=str, default='CORPD_FBK',
+    parser.add_argument('--acquisition', type=str2none, default='CORPD_FBK',
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path,
@@ -772,7 +824,7 @@ def create_arg_parser():
     parser.add_argument('--estimator', default='start_adaptive',
                         help='How to estimate gradients.')
     parser.add_argument('--baseline-type', type=str, default='step',
-                        help="Type of baseline to use. Options are 'step' and 'statestep'.")
+                        help="Type of baseline to use. Options are 'step', 'statestep', and 'self'.")
     parser.add_argument('--num-trajectories', type=int, default=10, help='Number of trajectories to sample for train.')
     parser.add_argument('--num-dev-trajectories', type=int, default=10, help='Number of trajectories to sample eval.')
 
@@ -842,15 +894,6 @@ def create_arg_parser():
     return parser
 
 
-def str2bool(v):
-    if isinstance(v, bool):
-        return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
-        return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
-        return False
-    else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
 if __name__ == '__main__':
@@ -871,7 +914,7 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    args.wandb = False
+    args.wandb = True
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
 
