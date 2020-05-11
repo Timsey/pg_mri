@@ -736,9 +736,9 @@ def create_arg_parser():
     parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
 
     parser.add_argument('--num-chans', type=int, default=16, help='Number of ConvNet channels')
-    parser.add_argument('--in-chans', default=2, type=int, help='Number of image input channels'
+    parser.add_argument('--in-chans', default=1, type=int, help='Number of image input channels'
                         'E.g. set to 2 if input is reconstruction and uncertainty map')
-    parser.add_argument('--fc-size', default=512, type=int, help='Size (width) of fully connected layer(s).')
+    parser.add_argument('--fc-size', default=256, type=int, help='Size (width) of fully connected layer(s).')
 
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
