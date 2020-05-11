@@ -165,9 +165,10 @@ class DataTransform:
         return rkspace
 
 
-def create_fastmri_datasets(args, train_mask, dev_mask):
+def create_fastmri_datasets(args, train_mask, dev_mask, test_mask):
     train_path = args.data_path / f'{args.challenge}_train_al'
     dev_path = args.data_path / f'{args.challenge}_val'
+    test_path = args.data_path / f'{args.challenge}_test_al'
 
     train_data = SliceData(
         root=train_path,
@@ -192,12 +193,13 @@ def create_fastmri_datasets(args, train_mask, dev_mask):
         center_volume=args.center_volume,
         state=args.dev_state
     )
-    # test_data = SliceData(
-    #     root=args.data_path / f'{args.challenge}_test_al',
-    #     transform=DataTransform(test_mask, args.resolution, args.challenge, use_seed=True),
-    #     sample_rate=args.sample_rate,
-    #     challenge=args.challenge,
-    #     acquisition=args.acquisition,
-    #     center_volume=args.center_volume
-    # )
-    return train_data, dev_data
+    test_data = SliceData(
+        root=test_path,
+        transform=DataTransform(test_mask, args.resolution, args.challenge, use_seed=True),
+        sample_rate=args.sample_rate,
+        challenge=args.challenge,
+        acquisition=args.acquisition,
+        center_volume=args.center_volume,
+        state=args.test_state
+    )
+    return train_data, dev_data, test_data

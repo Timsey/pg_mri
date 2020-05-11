@@ -1,9 +1,7 @@
 import numpy as np
 import torch
 import logging
-import random
 
-from collections import namedtuple
 from torch.utils.data import DataLoader
 
 from src.helpers.fastmri_data import create_fastmri_datasets
@@ -111,21 +109,23 @@ class MaskFunc:
 def create_datasets(args):
     train_mask = MaskFunc(args.center_fractions, args.accelerations)
     dev_mask = MaskFunc(args.center_fractions, args.accelerations)
-    # test_mask = MaskFunc(args.center_fractions, args.accelerations)
+    test_mask = MaskFunc(args.center_fractions, args.accelerations)
 
     if args.dataset == 'fastmri':
-        train_data, dev_data = create_fastmri_datasets(args, train_mask, dev_mask)
+        train_data, dev_data, test_data = create_fastmri_datasets(args, train_mask, dev_mask, test_mask)
     elif args.dataset == 'cifar10':
         train_data, dev_data = create_cifar10_datasets(args, train_mask, dev_mask)
+        test_data = None
     else:
         raise ValueError("Invalid dataset {}".format(args.dataset))
 
-    return train_data, dev_data
+    return train_data, dev_data, test_data
 
 
 def create_data_loaders(args, shuffle_train=True):
-    train_data, dev_data = create_datasets(args)
-    logging.info('Train slices: {}, Dev slices: {}'.format(len(train_data), len(dev_data)))
+    train_data, dev_data, test_data = create_datasets(args)
+    logging.info('Train slices: {}, Dev slices: {}, Test slices: {}'.format(
+        len(train_data), len(dev_data), len(test_data)))
 
     train_loader = DataLoader(
         dataset=train_data,
@@ -141,6 +141,13 @@ def create_data_loaders(args, shuffle_train=True):
         pin_memory=True,
     )
 
+    test_loader = DataLoader(
+        dataset=test_data,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+
     # Use dev data for visualisation purposes.
     # Batch size is set to 16 to get a 4x4 grid of images.
     display_loader = DataLoader(
@@ -149,4 +156,4 @@ def create_data_loaders(args, shuffle_train=True):
         num_workers=args.num_workers,
         pin_memory=True,
     )
-    return train_loader, dev_loader, None, display_loader
+    return train_loader, dev_loader, test_loader, display_loader

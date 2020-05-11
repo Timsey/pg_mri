@@ -32,10 +32,11 @@ from src.helpers.torch_metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters, str2bool, str2none)
 from src.helpers.data_loading import create_data_loaders
-from src.helpers.states import DEV_STATE, TRAIN_STATE
+from src.helpers.states import DEV_STATE, TRAIN_STATE, TEST_STATE
 from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
                                                 recon_model_forward_pass, create_impro_model_input, load_recon_model)
-from src.impro_models.impro_model_utils import build_impro_model, build_optim, save_model, impro_model_forward_pass
+from src.impro_models.impro_model_utils import (build_impro_model, load_impro_model, build_optim, save_model,
+                                                impro_model_forward_pass)
 from src.helpers import transforms
 
 logging.basicConfig(level=logging.INFO)
@@ -485,13 +486,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
     return ssims, time.perf_counter() - start
 
 
-def main(args):
-    args.trainQ = True
-    args.QR = True
-    # Reconstruction model
-    recon_args, recon_model = load_recon_model(args)
-    check_args_consistency(args, recon_args)
-
+def train_and_eval(args, recon_args, recon_model):
     # Improvement model to train
     model = build_impro_model(args)
     # Add mask parameters for training
@@ -597,10 +592,75 @@ def main(args):
     writer.close()
 
 
+def test(args, recon_args, recon_model):
+    model, impro_args = load_impro_model(pathlib.Path(args.impro_model_checkpoint))
+
+    impro_args.train_state = args.train_state
+    impro_args.dev_state = args.dev_state
+    impro_args.test_state = args.test_state
+
+    impro_args.wandb = args.wandb
+
+    if args.wandb:
+        wandb.config.update(args)
+        wandb.watch(model, log='all')
+
+        # Initialise summary writer
+    writer = SummaryWriter(log_dir=impro_args.run_dir / 'summary')
+
+    # Logging
+    logging.info(impro_args)
+    logging.info(recon_model)
+    logging.info(model)
+
+    if not isinstance(model, str):
+        # Parameter counting
+        logging.info('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
+            count_parameters(recon_model), count_trainable_parameters(recon_model),
+            count_untrainable_parameters(recon_model)))
+        logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
+            count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
+    # Create data loaders
+    _, _, test_loader, _ = create_data_loaders(impro_args, shuffle_train=False)
+    if args.data_range == 'gt':
+        test_data_range_dict = None
+    elif args.data_range == 'volume':
+        test_data_range_dict = create_data_range_dict(test_loader)
+    else:
+        raise ValueError(f'{args.data_range} is not valid')
+
+    test_ssims, test_ssim_time = evaluate_recons(impro_args, -1, recon_model, model, test_loader, writer,
+                                                 False, test_data_range_dict)
+    if args.wandb:
+        for epoch in range(args.num_epochs):
+            wandb.log({'val_ssims': {str(key): val for key, val in enumerate(test_ssims)}}, step=epoch + 1)
+
+    test_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(test_ssims)])
+    logging.info(f'  DevSSIM = [{test_ssims_str}]')
+    logging.info(f'DevSSIMTime = {test_ssim_time:.2f}s')
+    print(test_ssims_str)
+
+    writer.close()
+
+
+def main(args):
+    args.trainQ = True
+    args.QR = True
+    # Reconstruction model
+    recon_args, recon_model = load_recon_model(args)
+    check_args_consistency(args, recon_args)
+
+    # Improvement model to train
+    if args.do_train:
+        train_and_eval(args, recon_args, recon_model)
+    else:
+        test(args, recon_args, recon_model)
+
+
 def create_arg_parser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--resolution', default=80, type=int, help='Resolution of images')
+    parser.add_argument('--resolution', default=128, type=int, help='Resolution of images')
     parser.add_argument('--dataset', default='fastmri', help='Dataset type to use.')
     parser.add_argument('--challenge', type=str, default='singlecoil',
                         help='Which challenge for fastMRI training.')
@@ -690,6 +750,12 @@ def create_arg_parser():
                         help='Whether to use fixed data state for random data selection.')
 
     parser.add_argument('--maskconv-depth', type=int, default=3, help='Number of layers in maskconv model.')
+
+    parser.add_argument('--do_train', type=str2bool, default=True,
+                        help='Number of batches to compute before doing an optimizer step.')
+    parser.add_argument('--impro-model-checkpoint', type=pathlib.Path,
+                        default='/var/scratch/tbbakker/mrimpro/path/to/model.pt',
+                        help='Path to a pretrained impro model.')
     return parser
 
 
@@ -712,9 +778,11 @@ if __name__ == '__main__':
     if args.use_data_state:
         args.train_state = TRAIN_STATE
         args.dev_state = DEV_STATE
+        args.test_state = TEST_STATE
     else:
         args.train_state = None
         args.dev_state = None
+        args.test_state = None
 
     args.wandb = True
     if args.wandb:
