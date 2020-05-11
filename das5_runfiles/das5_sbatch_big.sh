@@ -18,28 +18,28 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fas
 --recon-model-checkpoint /var/scratch/tbbakker/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 16 --report-interval 100 \
 --num-target-rows 20 --lr 1e-4 --sample-rate .2 --seed 0 --num-workers 0 --in-chans 1 --lr-gamma 0.1 --num-epochs 50 --lr-step-size 40 --num-pools 4 --pool-stride 1 \
---estimator wr --acq_strat max --acquistion None --use-data-state True --center-volume
+--estimator wr --acq_strat max --acquistion None --use-data-state True --center-volume True
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages python -m src.train_improQR_model_sweep \
 --dataset fastmri --data-path /var/scratch/tbbakker/data/fastMRI/singlecoil/ --exp-dir /var/scratch/tbbakker/mrimpro/results/ --resolution 128 \
 --recon-model-checkpoint /var/scratch/tbbakker/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 16 --report-interval 100 \
 --num-target-rows 20 --lr 1e-4 --sample-rate .2 --seed 0 --num-workers 0 --in-chans 1 --lr-gamma 0.1 --num-epochs 30 --lr-step-size 20 --num-pools 4 --pool-stride 1 \
---estimator wr --acq_strat max --acquistion None --center-volume --use-data-state True
+--estimator wr --acq_strat max --acquistion None --center-volume True --use-data-state True
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages python -m src.train_improQR_model_sweep \
 --dataset fastmri --data-path /var/scratch/tbbakker/data/fastMRI/singlecoil/ --exp-dir /var/scratch/tbbakker/mrimpro/results/ --resolution 128 \
 --recon-model-checkpoint /var/scratch/tbbakker/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 16 --report-interval 100 \
 --num-target-rows 20 --lr 1e-4 --sample-rate .2 --seed 0 --num-workers 0 --in-chans 1 --lr-gamma 0.1 --num-epochs 50 --lr-step-size 40 --num-pools 4 --pool-stride 1 \
---estimator wr --acq_strat max --acquistion CORPD_FBK --center-volume --use-data-state True
+--estimator wr --acq_strat max --acquistion CORPD_FBK --center-volume True --use-data-state True
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages python -m src.train_improQR_model_sweep \
 --dataset fastmri --data-path /var/scratch/tbbakker/data/fastMRI/singlecoil/ --exp-dir /var/scratch/tbbakker/mrimpro/results/ --resolution 128 \
 --recon-model-checkpoint /var/scratch/tbbakker/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 16 --report-interval 100 \
 --num-target-rows 20 --lr 1e-4 --sample-rate .2 --seed 0 --num-workers 0 --in-chans 1 --lr-gamma 0.1 --num-epochs 30 --lr-step-size 20 --num-pools 4 --pool-stride 1 \
---estimator wr --acq_strat max --acquistion CORPD_FBK --center-volume --use-data-state True
+--estimator wr --acq_strat max --acquistion CORPD_FBK --center-volume True --use-data-state True
 
 
             # Nongreedy with self baseline (schedule)
