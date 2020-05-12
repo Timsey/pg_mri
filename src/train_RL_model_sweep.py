@@ -326,7 +326,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     else:
                         raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
-                    loss = loss.mean()  # Average over batch and trajectories
+                    # Divicde by batches_step to mimic taking mean over larger batch
+                    loss = loss.mean() / args.batches_step
                     loss.backward()
 
                     # Stores 0 loss for all steps but the last
@@ -379,7 +380,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     else:
                         raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
-                    loss = loss.mean()
+                    # Divicde by batches_step to mimic taking mean over larger batch
+                    loss = loss.mean() / args.batches_step
                     loss.backward()
 
                     epoch_loss[step] += loss.item() / len(train_loader) * gt.size(0) / args.batch_size
@@ -469,7 +471,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                     loss = -1 * (logprob_tensor_sum * (return_tensor - avg_return)) / (num_traj - 1)
                                     # batch
                                     loss = loss.sum(dim=1)
-                                    loss = loss.mean()
+                                    # Divicde by batches_step to mimic taking mean over larger batch
+                                    loss = loss.mean() / args.batches_step
                                     loss.backward()
                             elif args.baseline_type == 'selfstep':
                                 # step x batch x 1
@@ -487,7 +490,9 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                 raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
                             if args.baseline_type != 'self':
-                                loss = loss.mean()  # Average over batch (and trajectories except when self baseline)
+                                # Average over batch (and trajectories except when self baseline)
+                                # Divicde by batches_step to mimic taking mean over larger batch
+                                loss = loss.mean() / args.batches_step
                                 loss.backward()  # Store gradients
 
                             epoch_loss[step] += loss.item() / len(train_loader) * gt.size(0) / args.batch_size
