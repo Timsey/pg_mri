@@ -759,7 +759,7 @@ def train_and_eval(args, recon_args, recon_model):
     baseline = None
 
     for epoch in range(start_epoch, args.num_epochs):
-        scheduler.step(epoch)
+        scheduler.step()
         train_loss, train_time, baseline = train_epoch(args, epoch, recon_model, model, train_loader, optimiser,
                                                        writer, baseline, train_data_range_dict)
         dev_loss, dev_loss_time = 0, 0
@@ -959,6 +959,9 @@ def create_arg_parser():
                         default='/var/scratch/tbbakker/mrimpro/path/to/model.pt',
                         help='Path to a pretrained impro model.')
 
+    parser.add_argument('--wandb',  type=str2bool, default=False,
+                        help='Whether to use wandb logging for this run.')
+
     return parser
 
 
@@ -987,7 +990,6 @@ if __name__ == '__main__':
 
     args.use_recon_mask_params = False
 
-    args.wandb = True
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
 

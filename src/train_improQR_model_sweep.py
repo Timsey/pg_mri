@@ -527,7 +527,14 @@ def train_and_eval(args, recon_args, recon_model):
         logging.info('Policy model parameters: total {}, of which {} trainable and {} untrainable'.format(
             count_parameters(model), count_trainable_parameters(model), count_untrainable_parameters(model)))
 
-    scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    if args.scheduler_type == 'step':
+        scheduler = torch.optim.lr_scheduler.StepLR(optimiser, args.lr_step_size, args.lr_gamma)
+    elif args.scheduler_type == 'multistep':
+        if not isinstance(args.lr_multi_step_size, list):
+            args.lr_multi_step_size = [args.lr_multi_step_size]
+        scheduler = torch.optim.lr_scheduler.MultiStepLR(optimiser, args.lr_multi_step_size, args.lr_gamma)
+    else:
+        raise ValueError("{} is not a valid scheduler choice ('step', 'multistep')".format(args.scheduler_type))
 
     # Create data loaders
     train_loader, dev_loader, test_loader, display_loader = create_data_loaders(args, shuffle_train=True)
@@ -564,7 +571,7 @@ def train_and_eval(args, recon_args, recon_model):
     logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
 
     for epoch in range(start_epoch, args.num_epochs):
-        scheduler.step(epoch)
+        scheduler.step()
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer,
                                              k, train_data_range_dict)
         dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, dev_data_range_dict)
@@ -742,10 +749,16 @@ def create_arg_parser():
 
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+
     parser.add_argument('--lr-step-size', type=int, default=40,
                         help='Period of learning rate decay')
     parser.add_argument('--lr-gamma', type=float, default=0.1,
                         help='Multiplicative factor of learning rate decay')
+    parser.add_argument('--scheduler-type', type=str, choices=['step', 'multistep'], default='step',
+                        help='Number of training epochs')
+    parser.add_argument('--lr-multi-step-size', nargs='+', type=int, default=40,
+                        help='Period of learning rate decay')
+
     parser.add_argument('--use-data-state', type=str2bool, default=False,
                         help='Whether to use fixed data state for random data selection.')
 
@@ -756,6 +769,9 @@ def create_arg_parser():
     parser.add_argument('--impro-model-checkpoint', type=pathlib.Path,
                         default='/var/scratch/tbbakker/mrimpro/path/to/model.pt',
                         help='Path to a pretrained impro model.')
+
+    parser.add_argument('--wandb',  type=str2bool, default=False,
+                        help='Whether to use wandb logging for this run.')
     return parser
 
 
@@ -784,7 +800,6 @@ if __name__ == '__main__':
         args.dev_state = None
         args.test_state = None
 
-    args.wandb = False
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
 
