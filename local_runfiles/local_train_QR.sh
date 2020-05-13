@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-conda activate rim
+source /home/timsey/anaconda3/bin/activate rim
 
 echo "---------------------------------"
 
