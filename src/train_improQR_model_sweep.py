@@ -784,7 +784,7 @@ if __name__ == '__main__':
         args.dev_state = None
         args.test_state = None
 
-    args.wandb = True
+    args.wandb = False
     if args.wandb:
         wandb.init(project='mrimpro', config=args)
 
