@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+conda activate rim
+
 echo "---------------------------------"
 
 CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_model_sweep \
