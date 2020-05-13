@@ -233,7 +233,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     actions = torch.multinomial(probs, k, replacement=False)
                 elif args.estimator in ['start_adaptive', 'full_step']:  # REINFORCE
                     if args.baseline_type == 'self':  # For now we only support sampling with replacement
-                        actions = torch.multinomial(probs, k, replacement=False)
+                        actions = torch.multinomial(probs, k, replacement=True)
                     else:
                         # Sampling with replacement
                         actions = torch.multinomial(probs, k, replacement=True)
@@ -373,10 +373,17 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                             sl = sl.item()
                             loss += -1 * (reward_list[step] - baseline[vol][sl][step]) * logprobs
                         loss = loss / (i + 1)
-                    elif args.baseline_type == 'self':
-                        pass
-                    elif args.baseline_type == 'selfstep':
-                        pass
+                    elif args.baseline_type in ['self', 'selfstep']:  # identical for greedy
+                        # shape = batch x 1
+                        avg_reward = torch.mean(reward_list[step], dim=1, keepdim=True)
+                        # Get number of trajectories for correct average (see Wouter's paper)
+                        num_traj = logprobs.size(-1)
+                        # REINFORCE with self-baselines greedy
+                        # batch x k
+                        loss = -1 * (logprobs * (reward_list[step] - avg_reward)) / (num_traj - 1)
+                        # batch
+                        loss = loss.sum(dim=1)
+
                     else:
                         raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
@@ -783,7 +790,7 @@ def train_and_eval(args, recon_args, recon_model):
         logging.info(f'TrainTime = {train_time:.2f}s DevLossTime = {dev_loss_time:.2f}s '
                      f'TrainSSIMTime = {train_ssim_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s')
 
-        save_model(args, args.run_dir, epoch, model, optimiser, None, False)
+        save_model(args, args.run_dir, epoch, model, optimiser, None, False, args.milestones)
     writer.close()
 
 
@@ -959,6 +966,9 @@ def create_arg_parser():
                         default='/var/scratch/tbbakker/mrimpro/path/to/model.pt',
                         help='Path to a pretrained impro model.')
 
+    parser.add_argument('--milestones', nargs='+', type=int, default=[0, 9, 19, 29, 39, 49],
+                        help='Epochs at which to save model separately.')
+
     parser.add_argument('--wandb',  type=str2bool, default=False,
                         help='Whether to use wandb logging for this run.')
 
@@ -989,6 +999,8 @@ if __name__ == '__main__':
         args.test_state = None
 
     args.use_recon_mask_params = False
+
+    args.milestones = args.milestones + [0, args.num_epochs - 1]
 
     if args.wandb:
         wandb.init(project='mrimpro', config=args)

@@ -32,10 +32,11 @@ class SliceData(Dataset):
             else 'reconstruction_rss'
 
         self.examples = []
-        files = list(pathlib.Path(root).iterdir())
+        files = sorted(list(pathlib.Path(root).iterdir()))
         if sample_rate < 1:
-            if state is not None:  # Ensure same data is loaded when initialising the dataset multiple times in script
-                random.setstate(state)
+            # if state is not None:  # Ensure same data is loaded when initialising the dataset multiple times in script
+                # random.setstate(state)
+            random.seed(0)
             random.shuffle(files)  # Same behaviour across runs is already guaranteed by setting the seed for random
             num_files = round(len(files) * sample_rate)
             files = files[:num_files]
@@ -156,7 +157,7 @@ class DataTransform:
         image = transforms.ifft2(kspace)
         # Crop input image to get correctly sized kspace
         image = transforms.complex_center_crop(image, (self.resolution, self.resolution))
-        kspace = transforms.fft2(image)
+        # kspace = transforms.fft2(image)
         # Take complex abs to get a real image
         image = transforms.complex_abs(image)
         # rfft this image to get the kspace that will be used in active learning

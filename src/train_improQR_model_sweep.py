@@ -595,7 +595,7 @@ def train_and_eval(args, recon_args, recon_model):
         logging.info(f'TrainTime = {train_time:.2f}s DevLossTime = {dev_loss_time:.2f}s '
                      f'TrainSSIMTime = {train_ssim_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s')
 
-        save_model(args, args.run_dir, epoch, model, optimiser, None, False)
+        save_model(args, args.run_dir, epoch, model, optimiser, None, False, args.milestones)
     writer.close()
 
 
@@ -770,6 +770,9 @@ def create_arg_parser():
                         default='/var/scratch/tbbakker/mrimpro/path/to/model.pt',
                         help='Path to a pretrained impro model.')
 
+    parser.add_argument('--milestones', nargs='+', type=int, default=[0, 9, 19, 29, 39, 49],
+                        help='Epochs at which to save model separately.')
+
     parser.add_argument('--wandb',  type=str2bool, default=False,
                         help='Whether to use wandb logging for this run.')
     return parser
@@ -799,6 +802,8 @@ if __name__ == '__main__':
         args.train_state = None
         args.dev_state = None
         args.test_state = None
+
+    args.milestones = args.milestones + [0, args.num_epochs - 1]
 
     if args.wandb:
         wandb.init(project='mrimpro', config=args)

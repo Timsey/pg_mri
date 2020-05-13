@@ -55,7 +55,7 @@ def impro_model_forward_pass(args, impro_model, channels, mask):
     return output, train
 
 
-def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_best):
+def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_best, milestones):
     torch.save(
         {
             'epoch': epoch,
@@ -67,6 +67,20 @@ def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_bes
         },
         f=exp_dir / 'model.pt'
     )
+
+    if epoch in milestones:
+        torch.save(
+            {
+                'epoch': epoch,
+                'args': args,
+                'model': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'best_dev_loss': best_dev_loss,
+                'exp_dir': exp_dir
+            },
+            f=exp_dir / f'model_{epoch}.pt'
+        )
+
     if is_new_best:
         shutil.copyfile(exp_dir / 'model.pt', exp_dir / 'best_model.pt')
 
