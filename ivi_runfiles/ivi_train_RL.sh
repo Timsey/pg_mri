@@ -9,7 +9,7 @@
 #SBATCH --time 1-0:00:00
 #SBATCH --job-name=nogreedy
 
-#SBATCH -D /home/tbbakke/alphamri
+#SBATCH -D /home/tbbakke/mrimpro
 
 echo "Running..."
 
