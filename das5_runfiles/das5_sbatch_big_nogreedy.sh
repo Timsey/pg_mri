@@ -21,4 +21,4 @@ CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE PYTHONPATH=/var/scratch/tbbak
 --lr 1e-4 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --num-epochs 30 --num-pools 4 --pool-stride 1 \
 --estimator full_step --num-trajectories 8 --num-dev-trajectories 8 --greedy False --data-range volume --baseline-type selfstep \
 --scheduler-type multistep --lr-multi-step-size 10 20 --lr-gamma .1 --acquisition None --center-volume True --batches-step 1  --use-data-state True \
---wandb
+--wandb True
