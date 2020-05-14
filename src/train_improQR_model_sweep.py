@@ -574,7 +574,8 @@ def train_and_eval(args, recon_args, recon_model):
         scheduler.step()
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer,
                                              k, train_data_range_dict)
-        dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, dev_data_range_dict)
+        # dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, dev_data_range_dict)
+        dev_loss, dev_loss_time = 0, 0
         dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
                                                    False, dev_data_range_dict)
 
