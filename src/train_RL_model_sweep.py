@@ -65,26 +65,26 @@ def acquire_rows_in_batch_parallel(k, mk, mask, to_acquire):
     return m_exp, mk_exp
 
 
-def acquire_row(kspace, masked_kspace, next_rows, mask):
-    zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
-    # Don't forget to change mask for impro_model (necessary if impro model uses mask)
-    # Also need to change masked kspace for recon model (getting correct next-step zf)
-    # TODO: maybe do this in the acquire_new_zf_batch() function. Doesn't fit with other functions of same
-    #  description, but this one is particularly used for this acquisition loop.
-    for sl, next_row in enumerate(next_rows):
-        mask[sl, :, :, next_row, :] = 1.
-        masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
-    # Get new reconstruction for batch
-    return zf, mean, std, mask, masked_kspace
+# def acquire_row(kspace, masked_kspace, next_rows, mask):
+#     zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
+#     # Don't forget to change mask for impro_model (necessary if impro model uses mask)
+#     # Also need to change masked kspace for recon model (getting correct next-step zf)
+#     # TODO: maybe do this in the acquire_new_zf_batch() function. Doesn't fit with other functions of same
+#     #  description, but this one is particularly used for this acquisition loop.
+#     for sl, next_row in enumerate(next_rows):
+#         mask[sl, :, :, next_row, :] = 1.
+#         masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
+#     # Get new reconstruction for batch
+#     return zf, mean, std, mask, masked_kspace
+#
+#
+# def acquire_row_and_get_new_recon(kspace, masked_kspace, next_rows, mask, recon_model):
+#     zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask)
+#     impro_input = create_impro_model_input(args, recon_model, zf, mask)  # TODO: args is global here!
+#     return impro_input, zf, mean, std, mask, masked_kspace
 
 
-def acquire_row_and_get_new_recon(kspace, masked_kspace, next_rows, mask, recon_model):
-    zf, mean, std, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask)
-    impro_input = create_impro_model_input(args, recon_model, zf, mask)  # TODO: args is global here!
-    return impro_input, zf, mean, std, mask, masked_kspace
-
-
-def create_data_range_dict(loader):
+def create_data_range_dict(args, loader):
     # Locate ground truths of a volume
     gt_vol_dict = {}
     for it, data in enumerate(loader):
@@ -738,8 +738,8 @@ def train_and_eval(args, recon_args, recon_model):
         train_data_range_dict = None
         dev_data_range_dict = None
     elif args.data_range == 'volume':
-        train_data_range_dict = create_data_range_dict(train_loader)
-        dev_data_range_dict = create_data_range_dict(dev_loader)
+        train_data_range_dict = create_data_range_dict(args, train_loader)
+        dev_data_range_dict = create_data_range_dict(args, dev_loader)
     else:
         raise ValueError(f'{args.data_range} is not valid')
 
@@ -827,7 +827,7 @@ def test(args, recon_args, recon_model):
     if args.data_range == 'gt':
         test_data_range_dict = None
     elif args.data_range == 'volume':
-        test_data_range_dict = create_data_range_dict(test_loader)
+        test_data_range_dict = create_data_range_dict(args, test_loader)
     else:
         raise ValueError(f'{args.data_range} is not valid')
 

@@ -47,7 +47,7 @@ target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
 
 
-def create_data_range_dict(loader):
+def create_data_range_dict(args, loader):
     # Locate ground truths of a volume
     gt_vol_dict = {}
     for it, data in enumerate(loader):
@@ -542,8 +542,8 @@ def train_and_eval(args, recon_args, recon_model):
         train_data_range_dict = None
         dev_data_range_dict = None
     elif args.data_range == 'volume':
-        train_data_range_dict = create_data_range_dict(train_loader)
-        dev_data_range_dict = create_data_range_dict(dev_loader)
+        train_data_range_dict = create_data_range_dict(args, train_loader)
+        dev_data_range_dict = create_data_range_dict(args, dev_loader)
     else:
         raise ValueError(f'{args.data_range} is not valid')
 
@@ -633,7 +633,7 @@ def test(args, recon_args, recon_model):
     if args.data_range == 'gt':
         test_data_range_dict = None
     elif args.data_range == 'volume':
-        test_data_range_dict = create_data_range_dict(test_loader)
+        test_data_range_dict = create_data_range_dict(args, test_loader)
     else:
         raise ValueError(f'{args.data_range} is not valid')
 
