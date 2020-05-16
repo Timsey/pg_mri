@@ -3,11 +3,17 @@
 #Set job requirements
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
-#SBATCH -n 3
+#SBATCH -n 1
 #SBATCH -t 0-1:00:00
+
+echo "Starting..."
+echo $HOME
+echo $TMPDIR
 
 #Loading modules
 source /home/tbbakker/anaconda3/bin/activate fastmri
+
+nvidia-smi
 
 # Create data dir on scratch
 mkdir "$TMPDIR"/data
