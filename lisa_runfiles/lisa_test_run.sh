@@ -3,8 +3,12 @@
 #Set job requirements
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1
-#SBATCH -n 1
-#SBATCH -t 0-1:00:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --time 0-1:00:00
+#SBATCH --priority=TOP
+#SBATCH --job-name=greedy
+#SBATCH --verbose
 
 echo "Starting..."
 echo $HOME
