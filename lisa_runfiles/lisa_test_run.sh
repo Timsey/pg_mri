@@ -36,6 +36,8 @@ CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_m
 --estimator wr --acq_strat max --acquisition None --center-volume True --scheduler-type multistep --lr-multi-step-size 10 20 \
 --wandb True --do-train-ssim False
 
-
 #Copy output directory from scratch to home
 cp -r "$TMPDIR"/results $HOME/Projects/mrimpro/results
+
+
+ERROR: FileNotFoundError: [Errno 2] No such file or directory: '/scratch/data/singlecoil/singlecoil_train_al' in create_data_loaders.
