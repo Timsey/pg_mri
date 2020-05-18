@@ -85,7 +85,7 @@ def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_bes
         shutil.copyfile(exp_dir / 'model.pt', exp_dir / 'best_model.pt')
 
 
-def load_impro_model(checkpoint_file):
+def load_impro_model(checkpoint_file, optim=False):
     checkpoint = torch.load(checkpoint_file)
     args = checkpoint['args']
     model = build_impro_model(args)
@@ -97,7 +97,14 @@ def load_impro_model(checkpoint_file):
     if args.data_parallel:
         model = torch.nn.DataParallel(model)
     model.load_state_dict(checkpoint['model'])
+
+    start_epoch = checkpoint['epoch']
     del checkpoint
+
+    if optim:
+        optimizer = build_optim(args, model.parameters())
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        return model, args, start_epoch, optimizer
     return model, args
 
 

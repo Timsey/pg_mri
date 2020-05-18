@@ -411,61 +411,72 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
 
             batch_ssims = [init_ssim_val.item()]
 
-            for step in range(args.acquisition_steps):
-                # Improvement model output
-                output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
-                epoch_outputs[step + 1].append(output.to('cpu').numpy())
+            base_mask = mask
+            base_masked_kspace = masked_kspace
+            base_impro_input = impro_input
 
-                if args.acq_strat == 'max':
-                    # Greedy policy (size = batch)
-                    # Only acquire rows that have not been already acquired
-                    # TODO: Could just take the max of the masked output
-                    _, topk_rows = torch.topk(output, args.resolution, dim=1)
-                    unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
-                    next_rows = []
-                    for j, sl_topk_rows in enumerate(topk_rows):
-                        for row in sl_topk_rows:
-                            if row in unacquired[j, :].nonzero().flatten():
-                                next_rows.append(row)
-                                break
-                    # TODO: moving to device should happen only once before both loops. Should just mutate object after
-                    next_rows = torch.tensor(next_rows).long().to(args.device)
-                elif args.acq_strat == 'sample':
-                    # Acquire rows by sampling
-                    loss_mask = (mask == 0).squeeze().float()
-                    # Mask acquired rows
-                    logits = torch.where(loss_mask.byte(), output, -1e7 * torch.ones_like(output))
-                    # Softmax over 'logits' representing row scores
-                    probs = torch.nn.functional.softmax(logits - torch.max(logits, dim=1, keepdim=True)[0], dim=1)
-                    policy = torch.distributions.Categorical(probs)
-                    # batch x k
-                    next_rows = policy.sample()
-                else:
-                    raise ValueError(f'{args.acq_strat} is not a valid acquisition strategy')
+            if args.acq_strat == 'max' and args.num_test_trajectories != 1:
+                print('Doing max acquisition strategy: set num_test_trajectories to 1.')
+                args.num_test_trajectories = 1
+            for _ in range(args.num_test_trajectories):
+                mask = base_mask.clone()
+                masked_kspace = base_masked_kspace.clone()
+                impro_input = base_impro_input.clone()
+                for step in range(args.acquisition_steps):
+                    # Improvement model output
+                    output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
+                    epoch_outputs[step + 1].append(output.to('cpu').numpy())
 
-                # Acquire this row
-                impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
-                                                                         recon_model)
+                    if args.acq_strat == 'max':
+                        # Greedy policy (size = batch)
+                        # Only acquire rows that have not been already acquired
+                        # TODO: Could just take the max of the masked output
+                        _, topk_rows = torch.topk(output, args.resolution, dim=1)
+                        unacquired = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0)
+                        next_rows = []
+                        for j, sl_topk_rows in enumerate(topk_rows):
+                            for row in sl_topk_rows:
+                                if row in unacquired[j, :].nonzero().flatten():
+                                    next_rows.append(row)
+                                    break
+                        # TODO: moving to device should happen only once before both loops. Should just mutate object after
+                        next_rows = torch.tensor(next_rows).long().to(args.device)
+                    elif args.acq_strat == 'sample':
+                        # Acquire rows by sampling
+                        loss_mask = (mask == 0).squeeze().float()
+                        # Mask acquired rows
+                        logits = torch.where(loss_mask.byte(), output, -1e7 * torch.ones_like(output))
+                        # Softmax over 'logits' representing row scores
+                        probs = torch.nn.functional.softmax(logits - torch.max(logits, dim=1, keepdim=True)[0], dim=1)
+                        policy = torch.distributions.Categorical(probs)
+                        # batch x k
+                        next_rows = policy.sample()
+                    else:
+                        raise ValueError(f'{args.acq_strat} is not a valid acquisition strategy')
 
-                # TODO: this is weird. The recon model is trained to reconstruct targets normalised by the original
-                #  zf image's normalisation constants, but now we're un-normalising the outputted reconstruction by
-                #  the few-step-ahead zf image's normalisation constants. This un-normalised output reconstruction
-                #  may thus have a different scale that the target image (which is normalised by the original zf image's
-                #  normalisation constants). We must either use the original zf's constants for un-normalisation when
-                #  computing SSIM scores, or we use the target's normalisation constants, which seems more justified.
-                #  Note that currently we don't do normalisation based on the targets, so this will require some
-                #  changes to the DataLoader.
-                unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
-                # shape = 1
-                ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
-                                data_range=data_range).mean(dim=(-1, -2)).sum()
-                # eventually shape = al_steps
-                batch_ssims.append(ssim_val.item())
+                    # Acquire this row
+                    impro_input, _, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                                                                            recon_model)
+
+                    # TODO: this is weird. The recon model is trained to reconstruct targets normalised by the original
+                    #  zf image's normalisation constants, but now we're un-normalising the outputted reconstruction by
+                    #  the few-step-ahead zf image's normalisation constants. This un-normalised output reconstruction
+                    #  may thus have a different scale that the target image (which is normalised by the original zf image's
+                    #  normalisation constants). We must either use the original zf's constants for un-normalisation when
+                    #  computing SSIM scores, or we use the target's normalisation constants, which seems more justified.
+                    #  Note that currently we don't do normalisation based on the targets, so this will require some
+                    #  changes to the DataLoader.
+                    unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
+                    # shape = 1
+                    ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
+                                    data_range=data_range).mean(dim=(-1, -2)).sum()
+                    # eventually shape = al_steps
+                    batch_ssims.append(ssim_val.item())
 
             # shape = al_steps
             ssims += np.array(batch_ssims)
 
-    ssims /= tbs
+    ssims /= (tbs * args.num_test_trajectories)
 
     if not train:
         for step in range(args.acquisition_steps):
@@ -608,6 +619,7 @@ def test(args, recon_args, recon_model):
     impro_args.test_state = args.test_state
 
     impro_args.wandb = args.wandb
+    impro_args.num_test_trajectories = args.num_test_trajectories
 
     if args.wandb:
         wandb.config.update(args)
@@ -776,6 +788,8 @@ def create_arg_parser():
 
     parser.add_argument('--wandb',  type=str2bool, default=False,
                         help='Whether to use wandb logging for this run.')
+    parser.add_argument('--num-test-trajectories', type=int, default=4,
+                        help='Number of trajectories to use when testing sampling policy.')
     return parser
 
 
