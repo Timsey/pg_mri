@@ -28,21 +28,13 @@ cp -r $HOME/data/fastMRI/singlecoil "$TMPDIR"/data/
 #Create output directory on scratch
 mkdir "$TMPDIR"/results
 
-#CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_model_sweep \
-#--dataset fastmri --data-path "$TMPDIR"/data/ --exp-dir "$TMPDIR"/results/ --resolution 128 \
-#--recon-model-checkpoint /home/tbbakker/Projects/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt --recon-model-name nounc \
-#--of-which-four-pools 0 --num-chans 8 --batch-size 64 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 2 --report-interval 100 \
-#--num-target-rows 2 --lr 1e-4 --sample-rate 0.04 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.1 --num-epochs 1 --num-pools 4 --pool-stride 1 \
-#--estimator wr --acq_strat sample --acquisition None --center-volume True \
-#--wandb True --do-train-ssim False
-
 CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_model_sweep \
---dataset fastmri --data-path "$TMPDIR"/data/singlecoil/ --exp-dir "$TMPDIR"/results/ --resolution 128 \
+--dataset fastmri --data-path "$TMPDIR"/data/ --exp-dir "$TMPDIR"/results/ --resolution 128 \
 --recon-model-checkpoint /home/tbbakker/Projects/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt --recon-model-name nounc \
---of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 16 --report-interval 100 \
---num-target-rows 16 --lr 1e-4 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.1 --num-epochs 1 --num-pools 4 --pool-stride 1 \
+--of-which-four-pools 0 --num-chans 8 --batch-size 64 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 2 --report-interval 100 \
+--num-target-rows 2 --lr 1e-4 --sample-rate 0.04 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.1 --num-epochs 1 --num-pools 4 --pool-stride 1 \
 --estimator wr --acq_strat sample --acquisition None --center-volume True \
---wandb True --do-train-ssim True
+--wandb True --do-train-ssim False
 
 #Copy output directory from scratch to home
 cp -r "$TMPDIR"/results $HOME/Projects/mrimpro/results
