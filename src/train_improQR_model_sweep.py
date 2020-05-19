@@ -409,8 +409,6 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
             init_ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
                                  data_range=data_range).mean(dim=(-1, -2)).sum()
 
-            batch_ssims = [init_ssim_val.item()]
-
             base_mask = mask
             base_masked_kspace = masked_kspace
             base_impro_input = impro_input
@@ -422,6 +420,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                 mask = base_mask.clone()
                 masked_kspace = base_masked_kspace.clone()
                 impro_input = base_impro_input.clone()
+                batch_ssims = [init_ssim_val.item()]
+
                 for step in range(args.acquisition_steps):
                     # Improvement model output
                     output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
