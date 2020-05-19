@@ -23,7 +23,7 @@ nvidia-smi
 mkdir "$TMPDIR"/data
 
 #Copy input file to scratch
-cp $HOME/data/fastMRI/singlecoil "$TMPDIR"/data
+cp -r $HOME/data/fastMRI/singlecoil "$TMPDIR"/data
 
 #Create output directory on scratch
 mkdir "$TMPDIR"/results
