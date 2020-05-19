@@ -9,7 +9,6 @@
 #SBATCH --priority=TOP
 #SBATCH --job-name=greedy
 #SBATCH --verbose
-#SBATCH -D /home/tbbakker/mrimpro
 
 echo "Starting..."
 echo $HOME
