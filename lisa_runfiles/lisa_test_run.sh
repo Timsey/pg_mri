@@ -9,6 +9,7 @@
 #SBATCH --priority=TOP
 #SBATCH --job-name=greedy
 #SBATCH --verbose
+#SBATCH -D /home/tbbakker/mrimpro
 
 echo "Starting..."
 echo $HOME
@@ -34,7 +35,7 @@ CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_m
 --of-which-four-pools 0 --num-chans 8 --batch-size 64 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 2 --report-interval 100 \
 --num-target-rows 2 --lr 1e-4 --sample-rate 0.04 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.1 --num-epochs 1 --num-pools 4 --pool-stride 1 \
 --estimator wr --acq_strat sample --acquisition None --center-volume True \
---wandb False --do-train-ssim False
+--wandb True --do-train-ssim False
 
 #Copy output directory from scratch to home
 cp -r "$TMPDIR"/results $HOME/Projects/mrimpro/results
