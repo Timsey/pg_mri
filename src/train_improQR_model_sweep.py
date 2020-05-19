@@ -473,8 +473,8 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                     # eventually shape = al_steps
                     batch_ssims.append(ssim_val.item())
 
-            # shape = al_steps
-            ssims += np.array(batch_ssims)
+                # shape = al_steps
+                ssims += np.array(batch_ssims)
 
     ssims /= (tbs * args.num_test_trajectories)
 
