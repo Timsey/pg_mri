@@ -18,8 +18,6 @@ echo $TMPDIR
 #Loading modules
 source /home/tbbakker/anaconda3/bin/activate fastmri
 
-nvidia-smi
-
 # Create data dir on scratch
 mkdir "$TMPDIR"/data
 
@@ -29,11 +27,13 @@ cp -r $HOME/data/fastMRI/singlecoil "$TMPDIR"/data/
 #Create output directory on scratch
 mkdir "$TMPDIR"/results
 
+nvidia-smi
+
 CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_model_sweep \
 --dataset fastmri --data-path "$TMPDIR"/data/singlecoil/ --exp-dir "$TMPDIR"/results/ --resolution 128 \
 --recon-model-checkpoint /home/tbbakker/Projects/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 32 --acquisition-steps 28 --report-interval 100 \
---num-target-rows 16 --lr 1e-4 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.1 --num-epochs 1 --num-pools 4 --pool-stride 1 \
+--num-target-rows 16 --lr 1e-4 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.1 --num-epochs 50 --num-pools 4 --pool-stride 1 \
 --estimator wr --acq_strat sample --acquisition None --center-volume True --num-test-trajectories 4 \
 --wandb True --do-train-ssim True
 

@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=6
 #SBATCH --time 4-0:00:00
 #SBATCH --priority=TOP
-#SBATCH --job-name=greedy
+#SBATCH --job-name=nongreedy
 #SBATCH --verbose
 
 echo "Starting..."
@@ -17,8 +17,6 @@ echo $TMPDIR
 
 #Loading modules
 source /home/tbbakker/anaconda3/bin/activate fastmri
-
-nvidia-smi
 
 # Create data dir on scratch
 mkdir "$TMPDIR"/data
@@ -29,7 +27,9 @@ cp -r $HOME/data/fastMRI/singlecoil "$TMPDIR"/data/
 #Create output directory on scratch
 mkdir "$TMPDIR"/results
 
-CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_model_sweep \
+nvidia-smi
+
+CUDA_VISIBLE_DEVICES=0,1 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_model_sweep \
 --dataset fastmri --data-path "$TMPDIR"/data/singlecoil/ --exp-dir "$TMPDIR"/results/ --resolution 128 \
 --recon-model-checkpoint /home/tbbakker/Projects/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 16 --batch-size 4 --impro-model-name convpool --fc-size 256 --accelerations 32 --acquisition-steps 28 --report-interval 100 \
