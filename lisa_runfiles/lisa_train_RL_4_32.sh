@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --mem=20G
 #SBATCH --cpus-per-task=6
-#SBATCH --time 7-0:00:00
+#SBATCH --time 6-0:00:00
 #SBATCH --priority=TOP
 #SBATCH --job-name=nongreedy
 #SBATCH --verbose
