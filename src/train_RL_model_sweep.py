@@ -794,6 +794,9 @@ def train_and_eval(args, recon_args, recon_model):
                      f'TrainSSIMTime = {train_ssim_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s')
 
         save_model(args, args.run_dir, epoch, model, optimiser, None, False, args.milestones)
+
+        if args.wandb:
+            wandb.save('model.h5')
     writer.close()
 
 
@@ -1015,7 +1018,8 @@ if __name__ == '__main__':
             assert args.run_id is not None, "run_id must be given if resuming with wandb."
             wandb.init(project='mrimpro', resume=args.run_id)
             # wandb.restore(run_path=f"mrimpro/{args.run_id}")
-        wandb.init(project='mrimpro', config=args)
+        else:
+            wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False
