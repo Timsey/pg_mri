@@ -35,4 +35,5 @@ CUDA_VISIBLE_DEVICES=0,1 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_mode
 --lr 5e-5 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --num-epochs 50 --num-pools 4 --pool-stride 1 \
 --estimator full_step --num-trajectories 8 --num-dev-trajectories 8 --greedy False --data-range volume --baseline-type selfstep \
 --scheduler-type multistep --lr-multi-step-size 10 20 30 40 --lr-gamma .5 --acquisition None --center-volume True --batches-step 4 \
---wandb True --do-train-ssim True --resume True --run_id 4pa5p1lx
+--wandb True --do-train-ssim True \
+--resume True --run_id 4pa5p1lx --impro-model-checkpoint /home/tbbakke/mrimpro/exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-17_12:36:03/model.pt
