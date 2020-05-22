@@ -438,9 +438,9 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
 
     ssims /= tbs
 
-    for step in range(args.acquisition_steps):
-        outputs[-1][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
-    save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
+    # for step in range(args.acquisition_steps):
+    #     outputs[-1][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
+    # save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
 
     return ssims, time.perf_counter() - start
 

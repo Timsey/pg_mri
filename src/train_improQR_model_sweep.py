@@ -242,11 +242,11 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
         start_iter = time.perf_counter()
 
-    for step in range(args.acquisition_steps):
-        targets[epoch][step + 1] = epoch_targets[step + 1].tolist()
-        target_counts[epoch][step + 1] = epoch_target_counts[step + 1].tolist()
-    save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
-    save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
+    # for step in range(args.acquisition_steps):
+    #     targets[epoch][step + 1] = epoch_targets[step + 1].tolist()
+    #     target_counts[epoch][step + 1] = epoch_target_counts[step + 1].tolist()
+    # save_json(args.run_dir / 'targets_per_step_per_epoch.json', targets)
+    # save_json(args.run_dir / 'count_targets_per_step_per_epoch.json', target_counts)
 
     if args.wandb:
         wandb.log({'train_loss_step': {str(key + 1): val for key, val in enumerate(epoch_loss)}}, step=epoch + 1)
@@ -479,9 +479,9 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
     ssims /= (tbs * args.num_test_trajectories)
 
     if not train:
-        for step in range(args.acquisition_steps):
-            outputs[epoch][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
-        save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
+        # for step in range(args.acquisition_steps):
+        #     outputs[epoch][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
+        # save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
 
         for step, val in enumerate(ssims):
             writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)

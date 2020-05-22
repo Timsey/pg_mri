@@ -665,9 +665,9 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
     ssims /= tbs
 
     if not train:
-        for step in epoch_outputs.keys():
-            outputs[epoch][step] = np.concatenate(epoch_outputs[step], axis=0).tolist()
-        save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
+        # for step in epoch_outputs.keys():
+        #     outputs[epoch][step] = np.concatenate(epoch_outputs[step], axis=0).tolist()
+        # save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
 
         for step, val in enumerate(ssims):
             writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
