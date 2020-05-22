@@ -687,9 +687,18 @@ def train_and_eval(args, recon_args, recon_model):
     if args.resume:
         resumed = True
         new_run_dir = args.impro_model_checkpoint.parent
+        data_path = args.data_path
+        recon_model_checkpoint = args.recon_model_checkpoint
+
         model, args, start_epoch, optimiser = load_impro_model(pathlib.Path(args.impro_model_checkpoint), optim=True)
+
         args.old_run_dir = args.run_dir
+        args.old_recon_model_checkpoint = args.recon_model_checkpoint
+        args.old_data_path = args.data_path
+
+        args.recon_model_checkpoint = recon_model_checkpoint
         args.run_dir = new_run_dir
+        args.data_path = data_path
     else:
         resumed = False
         model = build_impro_model(args)
