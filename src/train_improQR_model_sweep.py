@@ -498,24 +498,42 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
 
 
 def train_and_eval(args, recon_args, recon_model):
-    # Improvement model to train
-    model = build_impro_model(args)
-    # Add mask parameters for training
-    args = add_mask_params(args, recon_args)
-    if args.data_parallel:
-        model = torch.nn.DataParallel(model)
-    optimiser = build_optim(args, model.parameters())
-    start_epoch = 0
-    # Create directory to store results in
-    savestr = 'res{}_al{}_accel{}_{}_{}_k{}_{}'.format(args.resolution, args.acquisition_steps, args.accelerations,
-                                                       args.impro_model_name, args.recon_model_name,
-                                                       args.num_target_rows,
-                                                       datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
-    args.run_dir = args.exp_dir / savestr
-    args.run_dir.mkdir(parents=True, exist_ok=False)
+    if args.resume:
+        resumed = True
+        new_run_dir = args.impro_model_checkpoint.parent
+        data_path = args.data_path
+        recon_model_checkpoint = args.recon_model_checkpoint
+
+        model, args, start_epoch, optimiser = load_impro_model(pathlib.Path(args.impro_model_checkpoint), optim=True)
+
+        args.old_run_dir = args.run_dir
+        args.old_recon_model_checkpoint = args.recon_model_checkpoint
+        args.old_data_path = args.data_path
+
+        args.recon_model_checkpoint = recon_model_checkpoint
+        args.run_dir = new_run_dir
+        args.data_path = data_path
+    else:
+        resumed = False
+        # Improvement model to train
+        model = build_impro_model(args)
+        # Add mask parameters for training
+        args = add_mask_params(args, recon_args)
+        if args.data_parallel:
+            model = torch.nn.DataParallel(model)
+        optimiser = build_optim(args, model.parameters())
+        start_epoch = 0
+        # Create directory to store results in
+        savestr = 'res{}_al{}_accel{}_{}_{}_k{}_{}'.format(args.resolution, args.acquisition_steps, args.accelerations,
+                                                           args.impro_model_name, args.recon_model_name,
+                                                           args.num_target_rows,
+                                                           datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
+        args.run_dir = args.exp_dir / savestr
+        args.run_dir.mkdir(parents=True, exist_ok=False)
 
     if args.wandb:
-        wandb.config.update(args)
+        allow_val_change = args.resumed  # only allow changes if resumed: otherwise something is wrong.
+        wandb.config.update(args, allow_val_change=allow_val_change)
         wandb.watch(model, log='all')
 
     # Logging
@@ -790,6 +808,11 @@ def create_arg_parser():
                         help='Whether to use wandb logging for this run.')
     parser.add_argument('--num-test-trajectories', type=int, default=4,
                         help='Number of trajectories to use when testing sampling policy.')
+
+    parser.add_argument('--resume',  type=str2bool, default=False,
+                        help='Continue training previous run?')
+    parser.add_argument('--run_id', type=str2none, default=None,
+                        help='Wandb run_id to continue training from.')
     return parser
 
 
@@ -821,7 +844,12 @@ if __name__ == '__main__':
     args.milestones = args.milestones + [0, args.num_epochs - 1]
 
     if args.wandb:
-        wandb.init(project='mrimpro', config=args)
+        if args.resume:
+            assert args.run_id is not None, "run_id must be given if resuming with wandb."
+            wandb.init(project='mrimpro', resume=args.run_id)
+            # wandb.restore(run_path=f"mrimpro/{args.run_id}")
+        else:
+            wandb.init(project='mrimpro', config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False
