@@ -685,11 +685,13 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
 
 def train_and_eval(args, recon_args, recon_model):
     if args.resume:
+        resumed = True
         new_run_dir = args.impro_model_checkpoint.parent
         model, args, start_epoch, optimiser = load_impro_model(pathlib.Path(args.impro_model_checkpoint), optim=True)
         args.old_run_dir = args.run_dir
         args.run_dir = new_run_dir
     else:
+        resumed = False
         model = build_impro_model(args)
         # Add mask parameters for training
         args = add_mask_params(args, recon_args)
@@ -705,8 +707,11 @@ def train_and_eval(args, recon_args, recon_model):
         args.run_dir = args.exp_dir / savestr
         args.run_dir.mkdir(parents=True, exist_ok=False)
 
+    args.resumed = resumed
+
     if args.wandb:
-        wandb.config.update(args)
+        allow_val_change = args.resumed  # only allow changes if resumed: otherwise something is wrong.
+        wandb.config.update(args, allow_val_change=allow_val_change)
         wandb.watch(model, log='all')
 
     # Logging
