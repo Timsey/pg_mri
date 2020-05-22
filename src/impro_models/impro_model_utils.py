@@ -99,12 +99,14 @@ def load_impro_model(checkpoint_file, optim=False):
     model.load_state_dict(checkpoint['model'])
 
     start_epoch = checkpoint['epoch']
-    del checkpoint
 
     if optim:
         optimizer = build_optim(args, model.parameters())
         optimizer.load_state_dict(checkpoint['optimizer'])
+        del checkpoint
         return model, args, start_epoch, optimizer
+
+    del checkpoint
     return model, args
 
 
