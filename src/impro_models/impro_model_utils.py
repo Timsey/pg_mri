@@ -90,9 +90,10 @@ def load_impro_model(checkpoint_file, optim=False):
     args = checkpoint['args']
     model = build_impro_model(args)
 
-    # No gradients for this model
-    for param in model.parameters():
-        param.requires_grad = False
+    if not optim:
+        # No gradients for this model
+        for param in model.parameters():
+            param.requires_grad = False
 
     if args.data_parallel:
         model = torch.nn.DataParallel(model)

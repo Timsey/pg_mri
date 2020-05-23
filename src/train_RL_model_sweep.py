@@ -770,18 +770,22 @@ def train_and_eval(args, recon_args, recon_model):
     # dev_batch = next(iter(dev_loader))
     # dev_loader = [dev_batch] * 1
 
-    if args.do_train_ssim:
-        train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
-                                                       True, train_data_range_dict)
-        train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
-        logging.info(f'TrainSSIM = [{train_ssims_str}]')
-        logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
+    if not args.resume:
+        if args.do_train_ssim:
+            train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
+                                                           True, train_data_range_dict)
+            train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+            logging.info(f'TrainSSIM = [{train_ssims_str}]')
+            logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
 
-    dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
-                                               False, dev_data_range_dict)
-    dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
-    logging.info(f'  DevSSIM = [{dev_ssims_str}]')
-    logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+        dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
+                                                   False, dev_data_range_dict)
+        dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+        logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+        logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+
+    if args.resume and args.baseline_type not in ['self', 'selfstep']:
+        raise ValueError('Cannot resume with original baseline for running average baselines.')
 
     baseline = None
 
