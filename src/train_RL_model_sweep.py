@@ -973,7 +973,7 @@ def create_arg_parser():
                         help='Number of training epochs')
 
     # Sweep params
-    parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
+    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators')
 
     parser.add_argument('--num-chans', type=int, default=16, help='Number of ConvNet channels')
     parser.add_argument('--in-chans', default=2, type=int, help='Number of image input channels'

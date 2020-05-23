@@ -716,7 +716,7 @@ def create_arg_parser():
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path,
-                        default='/var/scratch/tbbakker/fastMRI-shi/models/unet/al_nounc_res80_8to4in2_PD_cvol_ch16_b64_wd1em2/model.pt',
+                        default='/var/scratch/tbbakker/fastMRI-shi/models/unet/al_nounc_res80_8to4in2_cvol_symk/model.pt',
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
     parser.add_argument('--recon-model-name', default='nounc',
@@ -774,7 +774,7 @@ def create_arg_parser():
                         help='Whether to compute SSIM values on training data.')
 
     # Sweep params
-    parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
+    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators')
 
     parser.add_argument('--num-chans', type=int, default=16, help='Number of ConvNet channels')
     parser.add_argument('--in-chans', default=1, type=int, help='Number of image input channels'
