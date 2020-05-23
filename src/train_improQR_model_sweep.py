@@ -531,6 +531,8 @@ def train_and_eval(args, recon_args, recon_model):
         args.run_dir = args.exp_dir / savestr
         args.run_dir.mkdir(parents=True, exist_ok=False)
 
+    args.resumed = resumed
+
     if args.wandb:
         allow_val_change = args.resumed  # only allow changes if resumed: otherwise something is wrong.
         wandb.config.update(args, allow_val_change=allow_val_change)
