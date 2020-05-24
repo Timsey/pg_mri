@@ -699,6 +699,7 @@ def train_and_eval(args, recon_args, recon_model):
         args.recon_model_checkpoint = recon_model_checkpoint
         args.run_dir = new_run_dir
         args.data_path = data_path
+        args.resume = True
     else:
         resumed = False
         model = build_impro_model(args)
