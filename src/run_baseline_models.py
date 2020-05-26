@@ -530,7 +530,12 @@ def main(args):
             logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
         logging.info(f'  DevSSIM = [{ssims_str}]')
         if args.wandb:
-            wandb.log({'val_ssims': {str(key): val for key, val in enumerate(oracle_ssims)}}, step=epoch)
+            if args.data_split in ['val', 'test']:
+                wandb.log({'val_ssims': {str(key): val for key, val in enumerate(oracle_ssims)}}, step=epoch)
+            elif args.data_split == 'train':
+                wandb.log({'train_ssims': {str(key): val for key, val in enumerate(oracle_ssims)}}, step=epoch)
+            else:
+                raise ValueError()
     writer.close()
 
 

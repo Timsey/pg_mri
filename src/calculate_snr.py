@@ -572,10 +572,10 @@ def main():
 
     # mode, traj, m_epoch, data_runs, sr, accel, acquistions
     jobs = [
-        ['greedy', 8, 0, 10, 0.1, 32, 28],
-        ['nongreedy', 8, 0, 10, 0.1, 32, 28],
-        ['greedy', 8, 0, 10, 0.1, 8, 16],
-        ['nongreedy', 8, 0, 10, 0.1, 8, 16],
+        ['greedy', 8, 0, 10, 0.5, 8, 16],
+        ['nongreedy', 8, 0, 10, 0.5, 8, 16],
+        # ['greedy', 8, 0, 10, 0.5, 32, 28],
+        # ['nongreedy', 8, 0, 10, 0.5, 32, 28],
     ]
 
     # jobs = [
