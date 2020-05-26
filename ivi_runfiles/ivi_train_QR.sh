@@ -18,11 +18,20 @@ source /home/tbbakke/anaconda3/bin/activate ml
 nvidia-smi
 
 # Do your stuff
+
+# 1051
 CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_model_sweep \
 --data-path /home/tbbakke/data/fastMRI/singlecoil/ \
 --recon-model-checkpoint /home/tbbakke/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt \
 --wandb True \
---resume True --run_id m8f1k0ij --impro-model-checkpoint /home/tbbakke/mrimpro/exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-25_23:00:34/model.pt
+--resume True --run_id 3v372hon --impro-model-checkpoint /home/tbbakke/mrimpro/exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-25_16:59:53/model.pt
+
+# 1053
+#CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_model_sweep \
+#--data-path /home/tbbakke/data/fastMRI/singlecoil/ \
+#--recon-model-checkpoint /home/tbbakke/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt \
+#--wandb True \
+#--resume True --run_id m8f1k0ij --impro-model-checkpoint /home/tbbakke/mrimpro/exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-25_23:00:34/model.pt
 
 
 #CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_model_sweep \
