@@ -11,6 +11,7 @@ Run as follows in mrimpro base dir:
 
 import logging
 import time
+import copy
 import datetime
 import random
 import argparse
@@ -1005,16 +1006,15 @@ def create_arg_parser():
     parser.add_argument('--run_id', type=str2none, default=None,
                         help='Wandb run_id to continue training from.')
 
+    parser.add_argument('--test_multi',  type=str2bool, default=False,
+                        help='Test multiple models in one script?')
+    parser.add_argument('--impro_model_list', nargs='+', type=str, default=[None],
+                        help='List of model paths for multi-testing.')
+
     return parser
 
 
-if __name__ == '__main__':
-    # To fix known issue with h5py + multiprocessing
-    # See: https://discuss.pytorch.org/t/incorrect-data-using-h5py-with-dataloader/7079/2?u=ptrblck
-    import torch.multiprocessing
-    torch.multiprocessing.set_start_method('spawn')
-
-    args = create_arg_parser().parse_args()
+def wrap_main(args):
     if args.seed != 0:
         random.seed(args.seed)
         np.random.seed(args.seed)
@@ -1047,3 +1047,23 @@ if __name__ == '__main__':
     # torch.backends.cudnn.enabled = False
 
     main(args)
+
+
+if __name__ == '__main__':
+    # To fix known issue with h5py + multiprocessing
+    # See: https://discuss.pytorch.org/t/incorrect-data-using-h5py-with-dataloader/7079/2?u=ptrblck
+    import torch.multiprocessing
+    torch.multiprocessing.set_start_method('spawn')
+
+    base_args = create_arg_parser().parse_args()
+
+    if base_args.test_multi:
+        assert not base_args.do_train, "Doing multiple model testing: do_train must be False."
+        assert base_args.impro_model_list is not None, "Doing multiple model testing: must have list of impro models."
+
+        for model in base_args.impro_model_list:
+            args = copy.deepcopy(base_args)
+            args.impro_model_checkpoint = model
+            wrap_main(args)
+    else:
+        wrap_main(base_args)

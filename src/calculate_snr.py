@@ -185,14 +185,53 @@ def load_impro_model(checkpoint_file):
     return model, args, start_epoch, optimizer
 
 
-def snr_from_grads(grads_list):
+def snr_from_grads(grads_list, style):
     # num_batches x batch_size x last_layer_size (x second_to_last_layer_size)
     grads = np.stack(grads_list)
     # print(grads.shape)
 
+    if style == 'det':
+        snr = det_snr_from_grads(grads)
+    elif style == 'stoch':
+        snr = stoch_snr_from_grads(grads)
+    else:
+        raise ValueError()
+
+    return snr
+
+
+def stoch_snr_from_grads(grads):
+    # num_batches x batch_size x last_layer_size (x second_to_last_layer_size)
+
+    # Mean over batches: the gradient that the optimizer sees
+    # num_batches x last_layer_size (x secon_to_last_layer_size)
+    grads = np.mean(grads, axis=1)
+
+    # 1 x last_layer_size (x secon_to_last_layer_size)
+    mean = np.mean(grads, axis=0, keepdims=True)
+    var = np.mean((grads - mean) ** 2, axis=0, keepdims=True)
+
+    # variance of mean = variance of sample / num_samples (batches)
+    var = var / grads.shape[0]
+
+    # 1 x last_layer_size (x secon_to_last_layer_size)
+
+    #     # 1) mean / stddev in every direction of the loss surface (all weights individually)
+    #     snr = np.abs(mean) / np.sqrt(var)
+    #     # scalar
+    #     snr = snr.mean()
+
+    # 2) mean / stddev in norm: magnitude of mean and stddev in the high-dim loss surface
+    snr = np.linalg.norm(mean) / np.linalg.norm(np.sqrt(var))
+
+    return snr
+
+
+def det_snr_from_grads(grads):
+    # num_batches x batch_size x last_layer_size (x second_to_last_layer_size)
+
     if len(grads.shape) == 2:
         grads = grads[:, :, None]
-    # print(grads.shape)
 
     # 1 x last_layer_size x (1 OR second_to_last_layer_size)
     true_grad = grads.mean(axis=0)
@@ -212,17 +251,17 @@ def snr_from_grads(grads_list):
         paral_grad = paral_norm * vec_dir
         perpen_grad = grad - paral_grad
 
-    #     print(paral_norm.shape, vec_dir.shape, paral_grad.shape, perpen_grad.shape)
-    #     print(paral_norm)
-    #     print(vec_dir)
-    #     print(paral_grad)
-    #     print(perpen_grad)
+        #     print(paral_norm.shape, vec_dir.shape, paral_grad.shape, perpen_grad.shape)
+        #     print(paral_norm)
+        #     print(vec_dir)
+        #     print(paral_grad)
+        #     print(perpen_grad)
 
         signal = np.dot(paral_grad.flatten(), paral_grad.flatten())
         noise = np.dot(perpen_grad.flatten(), perpen_grad.flatten())
 
-    #     print(signal, noise)
-    #     print(signal / noise)
+        #     print(signal, noise)
+        #     print(signal / noise)
         snr += signal / noise
 
     snr /= len(grads)
@@ -245,18 +284,31 @@ def compute_gradients(args):
     return weight_path, bias_path, param_dir
 
 
-def compute_snr(weight_path, bias_path):
+def compute_snr(weight_path, bias_path, style):
     with open(weight_path, 'rb') as f:
         weight_list = pickle.load(f)
     with open(bias_path, 'rb') as f:
         bias_list = pickle.load(f)
 
-    weight_snr = snr_from_grads(weight_list)
-    bias_snr = snr_from_grads(bias_list)
+    weight_snr = snr_from_grads(weight_list, style)
+    bias_snr = snr_from_grads(bias_list, style)
     return weight_snr, bias_snr
 
 
 def get_predictions(args, loader, optimiser, model, recon_model, data_range_dict):
+    param_dir = (f'mepoch{args.m_epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+                 f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
+    param_dir = args.impro_model_checkpoint.parent / param_dir
+
+    weight_path = param_dir / f'weight_grads_r{args.data_runs}_it{args.iters}.pkl'
+    bias_path = param_dir / f'bias_grads_r{args.data_runs}_it{args.iters}.pkl'
+
+    if weight_path.exists() and bias_path.exists() and not args.force_computation:
+        print(f'Gradients already stored in: \n    {weight_path}\n    {bias_path}')
+        return weight_path, bias_path, param_dir
+
+    param_dir.mkdir(parents=True, exist_ok=True)
+
     k = args.num_trajectories
 
     weight_grads = []
@@ -322,17 +374,9 @@ def get_predictions(args, loader, optimiser, model, recon_model, data_range_dict
         ssims /= tbs
         print(f"     - ssims: \n       {ssims}")
 
-        param_dir = (f'mepoch{args.m_epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
-                     f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
-        print(f"     - Saving grads to: \n       {param_dir}")
-        param_dir = args.impro_model_checkpoint.parent / param_dir
-        param_dir.mkdir(parents=True, exist_ok=True)
-
-        weight_path = param_dir / 'weight_grads.pkl'
+        print(f"     - Saving grads of run {r + 1} to: \n       {param_dir}")
         with open(weight_path, 'wb') as f:
             pickle.dump(weight_grads, f)
-
-        bias_path = param_dir / 'bias_grads.pkl'
         with open(bias_path, 'wb') as f:
             pickle.dump(bias_grads, f)
 
@@ -515,7 +559,7 @@ def nongreedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, 
 
 
 class Arguments:
-    def __init__(self, run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size):
+    def __init__(self, run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size, force):
         self.accelerations = [accel]
         self.reciprocals_in_center = [1]
         self.acquisition_steps = steps
@@ -546,6 +590,7 @@ class Arguments:
         self.data_runs = data_runs
         self.iters = iters
         self.m_epoch = m_epoch
+        self.force_computation = force
 
         self.use_sensitivity = False
 
@@ -567,11 +612,12 @@ def main():
     # 1020
     ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-18_22:05:41'
 
-
     # Fixed params
     batch_size = 16
     batches_step = 1  # or 4
     iters = None
+    style = 'stoch'
+    force = False
 
     # mode, traj, m_epoch, data_runs, sr, accel, acquisitions
     jobs = [
@@ -636,17 +682,17 @@ def main():
         else:
             raise ValueError()
 
-        args = Arguments(run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size)
+        args = Arguments(run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size, force)
 
         weight_path, bias_path, param_dir = compute_gradients(args)
-        weight_snr, bias_snr = compute_snr(weight_path, bias_path)
+        weight_snr, bias_snr = compute_snr(weight_path, bias_path, style)
 
         summary_dict = {'weight_snr': weight_snr,
                         'bias_snr': bias_snr,
                         'weight_grads': str(weight_path),
                         'bias_grads': str(bias_path)}
 
-        summary_path = param_dir / 'snr_summary.json'
+        summary_path = param_dir / f'snr_{style}_summary.json'
         print(f"   Saving summary to {summary_path}")
         with open(summary_path, 'w') as f:
             json.dump(summary_dict, f, indent=4)
