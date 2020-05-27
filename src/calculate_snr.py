@@ -185,11 +185,7 @@ def load_impro_model(checkpoint_file):
     return model, args, start_epoch, optimizer
 
 
-def snr_from_grads(grads_list, style):
-    # num_batches x batch_size x last_layer_size (x second_to_last_layer_size)
-    grads = np.stack(grads_list)
-    # print(grads.shape)
-
+def snr_from_grads(grads, style):
     if style == 'det':
         snr = det_snr_from_grads(grads)
     elif style == 'stoch':
@@ -201,13 +197,7 @@ def snr_from_grads(grads_list, style):
 
 
 def stoch_snr_from_grads(grads):
-    # num_batches x batch_size x last_layer_size (x second_to_last_layer_size)
-
-    # Mean over batches: the gradient that the optimizer sees
-    # num_batches x last_layer_size (x secon_to_last_layer_size)
-    grads = np.mean(grads, axis=1)
-
-    # 1 x last_layer_size (x secon_to_last_layer_size)
+    # 1 x last_layer_size x (second_to_last_layer_size + 1)
     mean = np.mean(grads, axis=0, keepdims=True)
     var = np.mean((grads - mean) ** 2, axis=0, keepdims=True)
 
@@ -228,21 +218,13 @@ def stoch_snr_from_grads(grads):
 
 
 def det_snr_from_grads(grads):
-    # num_batches x batch_size x last_layer_size (x second_to_last_layer_size)
+    # num_batches x last_layer_size x (second_to_last_layer_size + 1)
 
-    if len(grads.shape) == 2:
-        grads = grads[:, :, None]
-
-    # 1 x last_layer_size x (1 OR second_to_last_layer_size)
+    # 1 x last_layer_size x (second_to_last_layer_size + 1)
     true_grad = grads.mean(axis=0)
-    # true_grad.shape
-
     true_grad_flat = true_grad.flatten()
-    # print(true_grad_flat.shape)
-
-    # 1 x (1 OR second_to_last_layer_size)
+    # 1 x (second_to_last_layer_size + 1)
     norm = np.linalg.norm(true_grad_flat)
-    # print(norm)
 
     snr = 0
     for grad in grads:
@@ -268,34 +250,25 @@ def det_snr_from_grads(grads):
     return snr
 
 
-def compute_gradients(args):
-    impro_model, impro_args, start_epoch, optimizer = load_impro_model(args.impro_model_checkpoint)
-    add_impro_args(args, impro_args)
-
-    recon_args, recon_model = load_recon_model(args)
-
-    train_loader, dev_loader, test_loader, _ = create_data_loaders(args)
-    loader = train_loader
-    data_range_dict = create_data_range_dict(args, loader)
-
-    weight_path, bias_path, param_dir = get_predictions(args, loader, optimizer, impro_model,
-                                                        recon_model, data_range_dict)
-
-    return weight_path, bias_path, param_dir
-
-
 def compute_snr(weight_path, bias_path, style):
     with open(weight_path, 'rb') as f:
         weight_list = pickle.load(f)
     with open(bias_path, 'rb') as f:
         bias_list = pickle.load(f)
 
-    weight_snr = snr_from_grads(weight_list, style)
-    bias_snr = snr_from_grads(bias_list, style)
-    return weight_snr, bias_snr
+    # num_batches x last_layer_size x second_to_last_layer_size
+    weight_grads = np.stack(weight_list)
+    # num_batches x last_layer_size x 1 (after reschape)
+    bias_grads = np.stack(bias_list)[:, :, None]
+
+    # num_batches x last_layer_size x (second_to_last_layer_size + 1)
+    grads = np.concatenate((weight_grads, bias_grads), axis=-1)
+
+    snr = snr_from_grads(grads, style)
+    return snr
 
 
-def get_predictions(args, loader, optimiser, model, recon_model, data_range_dict):
+def compute_gradients(args):
     param_dir = (f'mepoch{args.m_epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
                  f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
     param_dir = args.impro_model_checkpoint.parent / param_dir
@@ -308,6 +281,15 @@ def get_predictions(args, loader, optimiser, model, recon_model, data_range_dict
         return weight_path, bias_path, param_dir
 
     param_dir.mkdir(parents=True, exist_ok=True)
+
+    model, impro_args, start_epoch, optimiser = load_impro_model(args.impro_model_checkpoint)
+    add_impro_args(args, impro_args)
+
+    recon_args, recon_model = load_recon_model(args)
+
+    train_loader, dev_loader, test_loader, _ = create_data_loaders(args)
+    loader = train_loader
+    data_range_dict = create_data_range_dict(args, loader)
 
     k = args.num_trajectories
 
@@ -621,10 +603,10 @@ def main():
 
     # mode, traj, m_epoch, data_runs, sr, accel, acquisitions
     jobs = [
-        ['greedy', 8, 0, 1, 0.5, 8, 16],
-        ['nongreedy', 8, 0, 1, 0.5, 8, 16],
-        ['greedy', 8, 0, 1, 0.5, 32, 28],
-        ['nongreedy', 8, 0, 1, 0.5, 32, 28],
+        ['greedy', 32, 0, 1, 0.5, 8, 16],
+        ['nongreedy', 32, 0, 1, 0.5, 8, 16],
+        ['greedy', 32, 0, 1, 0.5, 32, 28],
+        ['nongreedy', 32, 0, 1, 0.5, 32, 28],
     ]
 
     # jobs = [
@@ -685,10 +667,9 @@ def main():
         args = Arguments(run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size, force)
 
         weight_path, bias_path, param_dir = compute_gradients(args)
-        weight_snr, bias_snr = compute_snr(weight_path, bias_path, style)
+        snr = compute_snr(weight_path, bias_path, style)
 
-        summary_dict = {'weight_snr': weight_snr,
-                        'bias_snr': bias_snr,
+        summary_dict = {'snr': str(snr),
                         'weight_grads': str(weight_path),
                         'bias_grads': str(bias_path)}
 
@@ -698,12 +679,11 @@ def main():
             json.dump(summary_dict, f, indent=4)
 
         results_dict[i] = {'job': (mode, traj, m_epoch, data_runs, sr, accel, steps),
-                           'weight_snr': weight_snr,
-                           'bias_snr': bias_snr}
-        print(weight_snr, bias_snr)
+                           'snr': str(snr)}
+        print(f'SNR: {snr}')
 
     savestr = f'{datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")}.json'
-    save_dir = pathlib.Path(os.getcwd()) / 'snr_results'
+    save_dir = pathlib.Path(os.getcwd()) / f'snr_results_{style}'
     save_dir.mkdir(parents=True, exist_ok=True)
     save_file = save_dir / savestr
     print(f'\nSaving results to: {save_file}')
