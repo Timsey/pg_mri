@@ -641,8 +641,8 @@ def main():
     results_dict = {}
     for i, (mode, traj, m_epoch, data_runs, sr, accel, steps) in enumerate(jobs):
         pr_str = (f"Job {i + 1}/{len(jobs)}\n"
-                  f"   Mode: {mode:>9}, accel {accel:>2}, steps {steps:>2}\n"
-                  f"   Ckpt: {m_epoch:>2}, runs: {data_runs:>2}, srate {sr:>3}, ")
+                  f"   mode: {mode:>9}, accel {accel:>2}, steps {steps:>2}\n"
+                  f"   ckpt: {m_epoch:>2}, runs: {data_runs:>2}, srate {sr:>3}, traj {traj:>2}")
         print(pr_str)
 
         if mode == 'greedy':
