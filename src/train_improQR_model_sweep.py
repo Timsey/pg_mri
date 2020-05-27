@@ -221,7 +221,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
             else:
                 raise ValueError(f'{args.acq_strat} is not a valid acquisition strategy')
 
-            impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+            impro_input, zf, _, _, mask, masked_kspace = acquire_row(args, kspace, masked_kspace, next_rows, mask,
                                                                      recon_model)
 
         optimiser.step()
@@ -255,7 +255,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
     return np.mean(epoch_loss), time.perf_counter() - start_epoch
 
 
-def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
+def acquire_row(args, kspace, masked_kspace, next_rows, mask, recon_model):
     zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
     # Don't forget to change mask for impro_model (necessary if impro model uses mask)
     # Also need to change masked kspace for recon model (getting correct next-step zf)
@@ -356,7 +356,7 @@ def evaluate(args, epoch, recon_model, model, dev_loader, writer, k, data_range_
                 else:
                     raise ValueError(f'{args.acq_strat} is not a valid acquisition strategy')
 
-                impro_input, zf, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                impro_input, zf, _, _, mask, masked_kspace = acquire_row(args, kspace, masked_kspace, next_rows, mask,
                                                                          recon_model)
 
         if args.wandb:
@@ -456,7 +456,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                         raise ValueError(f'{args.acq_strat} is not a valid acquisition strategy')
 
                     # Acquire this row
-                    impro_input, _, _, _, mask, masked_kspace = acquire_row(kspace, masked_kspace, next_rows, mask,
+                    impro_input, _, _, _, mask, masked_kspace = acquire_row(args, kspace, masked_kspace, next_rows, mask,
                                                                             recon_model)
 
                     # TODO: this is weird. The recon model is trained to reconstruct targets normalised by the original
