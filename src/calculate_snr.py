@@ -656,8 +656,8 @@ def main():
                            'bias_snr': bias_snr}
         print(weight_snr, bias_snr)
 
-    savestr = datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
-    save_dir = pathlib.Path(os.getcwd()).parent / 'snr_results'
+    savestr = f'{datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")}.json'
+    save_dir = pathlib.Path(os.getcwd()) / 'snr_results'
     save_dir.mkdir(parents=True, exist_ok=True)
     save_file = save_dir / savestr
     print(f'\nSaving results to: {save_file}')
