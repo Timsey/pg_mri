@@ -561,16 +561,19 @@ def main():
 
     # Non greedy
     # 990
-    ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-17_12:36:03'
+    # ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-17_12:36:03'
+    # 1040
+    ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_03:58:51'
     # 1020
     ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-18_22:05:41'
+
 
     # Fixed params
     batch_size = 16
     batches_step = 1  # or 4
     iters = None
 
-    # mode, traj, m_epoch, data_runs, sr, accel, acquistions
+    # mode, traj, m_epoch, data_runs, sr, accel, acquisitions
     jobs = [
         ['greedy', 8, 0, 1, 0.5, 8, 16],
         ['nongreedy', 8, 0, 1, 0.5, 8, 16],
