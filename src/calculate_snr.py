@@ -592,7 +592,9 @@ def main():
     # 1040
     ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_03:58:51'
     # 1020
-    ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-18_22:05:41'
+    # ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-18_22:05:41'
+    #1 049
+    ng_run_long = 'res128_al28_accel[32]_convpool_nounc_k8_2020-05-24_11:07:52'
 
     # Fixed params
     batch_size = 16
@@ -603,10 +605,30 @@ def main():
 
     # mode, traj, m_epoch, data_runs, sr, accel, acquisitions
     jobs = [
-        ['greedy', 32, 0, 1, 0.5, 8, 16],
-        ['nongreedy', 32, 0, 1, 0.5, 8, 16],
-        ['greedy', 32, 0, 1, 0.5, 32, 28],
-        ['nongreedy', 32, 0, 1, 0.5, 32, 28],
+        ['greedy', 16, 0, 1, 0.5, 8, 16],
+        ['nongreedy', 16, 0, 1, 0.5, 8, 16],
+        ['greedy', 16, 0, 1, 0.5, 32, 28],
+        ['nongreedy', 16, 0, 1, 0.5, 32, 28],
+        ['greedy', 16, 9, 1, 0.5, 8, 16],
+        ['nongreedy', 16, 9, 1, 0.5, 8, 16],
+        ['greedy', 16, 9, 1, 0.5, 32, 28],
+        ['nongreedy', 16, 9, 1, 0.5, 32, 28],
+        ['greedy', 16, 19, 1, 0.5, 8, 16],
+        ['nongreedy', 16, 19, 1, 0.5, 8, 16],
+        ['greedy', 16, 19, 1, 0.5, 32, 28],
+        ['nongreedy', 16, 19, 1, 0.5, 32, 28],
+        ['greedy', 16, 29, 1, 0.5, 8, 16],
+        ['nongreedy', 16, 29, 1, 0.5, 8, 16],
+        ['greedy', 16, 29, 1, 0.5, 32, 28],
+        ['nongreedy', 16, 29, 1, 0.5, 32, 28],
+        ['greedy', 16, 39, 1, 0.5, 8, 16],
+        ['nongreedy', 16, 39, 1, 0.5, 8, 16],
+        ['greedy', 16, 39, 1, 0.5, 32, 28],
+        ['nongreedy', 16, 39, 1, 0.5, 32, 28],
+        ['greedy', 16, 49, 1, 0.5, 8, 16],
+        ['nongreedy', 16, 49, 1, 0.5, 8, 16],
+        ['greedy', 16, 49, 1, 0.5, 32, 28],
+        ['nongreedy', 16, 49, 1, 0.5, 32, 28],
     ]
 
     # jobs = [
