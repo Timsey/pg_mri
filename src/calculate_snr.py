@@ -594,7 +594,7 @@ def main():
     # 1020
     # ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-18_22:05:41'
     #1 049
-    ng_run_long = 'res128_al28_accel[32]_convpool_nounc_k8_2020-05-24_11:07:52'
+    ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-24_11:07:52'
 
     # Fixed params
     batch_size = 16
