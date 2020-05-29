@@ -602,7 +602,9 @@ def main():
     # 1043
     g_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_11:43:14'
     # 1046
-    g_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-22_13:10:25'
+    # g_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-22_13:10:25'
+    # 1060
+    g_run_long = 'res128_al28_accel[32]_convpool_nounc_k8_2020-05-27_10:12:00'
 
     # Non greedy
     # 990
@@ -611,7 +613,7 @@ def main():
     ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_03:58:51'
     # 1020
     # ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-18_22:05:41'
-    #1 049
+    # 1049
     ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-24_11:07:52'
 
     # Fixed params
