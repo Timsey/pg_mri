@@ -1,10 +1,10 @@
 #!/bin/sh
 
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=10
 #SBATCH --priority=TOP
-#SBATCH --mem=10G
+#SBATCH --mem=20G
 #SBATCH --verbose
 #SBATCH --time 5-0:00:00
 #SBATCH --job-name=nogreedy
