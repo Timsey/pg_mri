@@ -503,18 +503,18 @@ def main(args):
         # dev_loader = [dev_batch] * 1
         # # dev_loader = train_loader
 
-        if args.data_split in ['dev', 'val']:
-            oracle_ssims, oracle_time = run_oracle(args, recon_model, dev_loader, data_range_dict)
-        elif args.data_split == 'test':
-            oracle__ssims, oracle_time = run_oracle(args, recon_model, test_loader, data_range_dict)
-        elif args.data_split == 'train':
-            oracle_ssims, oracle_time = run_oracle(args, recon_model, train_loader, data_range_dict)
-        else:
-            raise ValueError
-
-    ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_ssims)])
-    logging.info(f'  DevSSIM = [{ssims_str}]')
-    logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
+    #     if args.data_split in ['dev', 'val']:
+    #         oracle_ssims, oracle_time = run_oracle(args, recon_model, dev_loader, data_range_dict)
+    #     elif args.data_split == 'test':
+    #         oracle_ssims, oracle_time = run_oracle(args, recon_model, test_loader, data_range_dict)
+    #     elif args.data_split == 'train':
+    #         oracle_ssims, oracle_time = run_oracle(args, recon_model, train_loader, data_range_dict)
+    #     else:
+    #         raise ValueError
+    #
+    # ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_ssims)])
+    # logging.info(f'  DevSSIM = [{ssims_str}]')
+    # logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
 
     # For storing in wandb
     for epoch in range(args.num_epochs + 1):
