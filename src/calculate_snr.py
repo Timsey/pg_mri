@@ -272,15 +272,35 @@ def compute_gradients(args):
     param_dir = (f'mepoch{args.m_epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
                  f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
     param_dir = args.impro_model_checkpoint.parent / param_dir
+    param_dir.mkdir(parents=True, exist_ok=True)
 
+    # Create storage path
     weight_path = param_dir / f'weight_grads_r{args.data_runs}_it{args.iters}.pkl'
     bias_path = param_dir / f'bias_grads_r{args.data_runs}_it{args.iters}.pkl'
-
+    # Check if already computed (skip computing again if not args.force_computation)
     if weight_path.exists() and bias_path.exists() and not args.force_computation:
         print(f'Gradients already stored in: \n    {weight_path}\n    {bias_path}')
         return weight_path, bias_path, param_dir
 
-    param_dir.mkdir(parents=True, exist_ok=True)
+    start_run = 0
+    weight_grads = []
+    bias_grads = []
+
+    # Check if some part of the gradients already computed
+    for r in range(args.data_runs, 0, -1):
+        tmp_param_dir = (f'mepoch{args.m_epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+                         f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
+        tmp_weight_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}_it{args.iters}.pkl'
+        tmp_bias_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}_it{args.iters}.pkl'
+        # If part already computed, skip this part of the computation by setting start_run to the highest
+        # computed run. Also load the weights.
+        if tmp_weight_path.exists() and tmp_bias_path.exists() and not args.force_computation:
+            with open(tmp_weight_path, 'rb') as f:
+                weight_grads = pickle.load(f)
+            with open(tmp_bias_path, 'rb') as f:
+                bias_grads = pickle.load(f)
+            start_run = r
+            break
 
     model, impro_args, start_epoch, optimiser = load_impro_model(args.impro_model_checkpoint)
     add_impro_args(args, impro_args)
@@ -292,10 +312,7 @@ def compute_gradients(args):
     data_range_dict = create_data_range_dict(args, loader)
 
     k = args.num_trajectories
-
-    weight_grads = []
-    bias_grads = []
-    for r in range(args.data_runs):
+    for r in range(start_run, args.data_runs):
         print(f"\n    Run {r + 1} ...")
         ssims = 0
         cbatch = 0
@@ -602,63 +619,35 @@ def main():
     iters = None
     style = 'stoch'
     force = False
+    runs = 3
 
     # mode, traj, m_epoch, data_runs, sr, accel, acquisitions
     jobs = [
-        ['greedy', 16, 0, 1, 0.5, 8, 16],
-        ['nongreedy', 16, 0, 1, 0.5, 8, 16],
-        ['greedy', 16, 0, 1, 0.5, 32, 28],
-        ['nongreedy', 16, 0, 1, 0.5, 32, 28],
-        ['greedy', 16, 9, 1, 0.5, 8, 16],
-        ['nongreedy', 16, 9, 1, 0.5, 8, 16],
-        ['greedy', 16, 9, 1, 0.5, 32, 28],
-        ['nongreedy', 16, 9, 1, 0.5, 32, 28],
-        ['greedy', 16, 19, 1, 0.5, 8, 16],
-        ['nongreedy', 16, 19, 1, 0.5, 8, 16],
-        ['greedy', 16, 19, 1, 0.5, 32, 28],
-        ['nongreedy', 16, 19, 1, 0.5, 32, 28],
-        ['greedy', 16, 29, 1, 0.5, 8, 16],
-        ['nongreedy', 16, 29, 1, 0.5, 8, 16],
-        ['greedy', 16, 29, 1, 0.5, 32, 28],
-        ['nongreedy', 16, 29, 1, 0.5, 32, 28],
-        ['greedy', 16, 39, 1, 0.5, 8, 16],
-        ['nongreedy', 16, 39, 1, 0.5, 8, 16],
-        ['greedy', 16, 39, 1, 0.5, 32, 28],
-        ['nongreedy', 16, 39, 1, 0.5, 32, 28],
-        ['greedy', 16, 49, 1, 0.5, 8, 16],
-        ['nongreedy', 16, 49, 1, 0.5, 8, 16],
-        ['greedy', 16, 49, 1, 0.5, 32, 28],
-        ['nongreedy', 16, 49, 1, 0.5, 32, 28],
+        ['greedy', 16, 0, runs, 0.5, 8, 16],
+        ['nongreedy', 16, 0, runs, 0.5, 8, 16],
+        ['greedy', 16, 0, runs, 0.5, 32, 28],
+        ['nongreedy', 16, 0, runs, 0.5, 32, 28],
+        ['greedy', 16, 9, runs, 0.5, 8, 16],
+        ['nongreedy', 16, 9, runs, 0.5, 8, 16],
+        ['greedy', 16, 9, runs, 0.5, 32, 28],
+        ['nongreedy', 16, 9, runs, 0.5, 32, 28],
+        ['greedy', 16, 19, runs, 0.5, 8, 16],
+        ['nongreedy', 16, 19, runs, 0.5, 8, 16],
+        ['greedy', 16, 19, runs, 0.5, 32, 28],
+        ['nongreedy', 16, 19, runs, 0.5, 32, 28],
+        ['greedy', 16, 29, runs, 0.5, 8, 16],
+        ['nongreedy', 16, 29, runs, 0.5, 8, 16],
+        ['greedy', 16, 29, runs, 0.5, 32, 28],
+        ['nongreedy', 16, 29, runs, 0.5, 32, 28],
+        ['greedy', 16, 39, runs, 0.5, 8, 16],
+        ['nongreedy', 16, 39, runs, 0.5, 8, 16],
+        ['greedy', 16, 39, runs, 0.5, 32, 28],
+        ['nongreedy', 16, 39, runs, 0.5, 32, 28],
+        ['greedy', 16, 49, runs, 0.5, 8, 16],
+        ['nongreedy', 16, 49, runs, 0.5, 8, 16],
+        ['greedy', 16, 49, runs, 0.5, 32, 28],
+        ['nongreedy', 16, 49, runs, 0.5, 32, 28],
     ]
-
-    # jobs = [
-    #         ['greedy', 8, 0, 5, 0.5, 8, 16],
-    #         ['nongreedy', 8, 0, 5, 0.5, 8, 16],
-    #         ['greedy', 8, 49, 5, 0.5, 8, 16],
-    #         ['nongreedy', 8, 49, 5, 0.5, 8, 16],
-    #         ['greedy', 8, 0, 5, 0.5, 32, 28],
-    #         ['nongreedy', 8, 0, 5, 0.5, 32, 28],
-    #         ['greedy', 8, 49, 5, 0.5, 32, 28],
-    #         ['nongreedy', 8, 49, 5, 0.5, 32, 28],
-
-    #         ['greedy', 8, 9, 5, 0.5, 8, 16],
-    #         ['nongreedy', 8, 9, 5, 0.5, 8, 16],
-    #         ['greedy', 8, 19, 5, 0.5, 8, 16],
-    #         ['nongreedy', 8, 19, 5, 0.5, 8, 16],
-    #         ['greedy', 8, 29, 5, 0.5, 8, 16],
-    #         ['nongreedy', 8, 29, 5, 0.5, 8, 16],
-    #         ['greedy', 8, 39, 5, 0.5, 8, 16],
-    #         ['nongreedy', 8, 39, 5, 0.5, 8, 16],
-
-    #         ['greedy', 8, 9, 5, 0.5, 32, 28],
-    #         ['nongreedy', 8, 9, 5, 0.5, 32, 28],
-    #         ['greedy', 8, 19, 5, 0.5, 32, 28],
-    #         ['nongreedy', 8, 19, 5, 0.5, 32, 28],
-    #         ['greedy', 8, 29, 5, 0.5, 32, 28],
-    #         ['nongreedy', 8, 29, 5, 0.5, 32, 28],
-    #         ['greedy', 8, 39, 5, 0.5, 32, 28],
-    #         ['nongreedy', 8, 39, 5, 0.5, 32, 28],
-    #        ]
 
     results_dict = {}
     for i, (mode, traj, m_epoch, data_runs, sr, accel, steps) in enumerate(jobs):
