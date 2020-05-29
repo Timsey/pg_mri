@@ -604,7 +604,7 @@ def main():
     # 1046
     # g_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-22_13:10:25'
     # 1060
-    g_run_long = 'res128_al28_accel[32]_convpool_nounc_k8_2020-05-27_10:12:00'
+    g_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-27_10:12:00'
 
     # Non greedy
     # 990
