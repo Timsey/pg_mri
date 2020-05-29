@@ -295,6 +295,7 @@ def compute_gradients(args):
         # If part already computed, skip this part of the computation by setting start_run to the highest
         # computed run. Also load the weights.
         if tmp_weight_path.exists() and tmp_bias_path.exists() and not args.force_computation:
+            print(f'Gradients up to run {r} already stored in: \n    {tmp_weight_path}\n    {tmp_bias_path}')
             with open(tmp_weight_path, 'rb') as f:
                 weight_grads = pickle.load(f)
             with open(tmp_bias_path, 'rb') as f:
