@@ -601,6 +601,7 @@ def main():
     # Greedy
     # 1043
     g_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_11:43:14'
+
     # 1046
     # g_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-22_13:10:25'
     # 1060
@@ -610,11 +611,16 @@ def main():
     # 990
     # ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-17_12:36:03'
     # 1040
-    ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_03:58:51'
+    # ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_03:58:51'
+    # 1085
+    ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k16_2020-05-29_20:46:15'
+
     # 1020
     # ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-18_22:05:41'
     # 1049
-    ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-24_11:07:52'
+    # ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-24_11:07:52'
+    # 1071
+    ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-28_10:09:51'
 
     # Fixed params
     batch_size = 16
@@ -622,7 +628,7 @@ def main():
     iters = None
     style = 'stoch'
     force = False
-    runs = 3
+    runs = 1
 
     # mode, traj, m_epoch, data_runs, sr, accel, acquisitions
     jobs = [
