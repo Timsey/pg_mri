@@ -189,32 +189,51 @@ def snr_from_grads(grads, style):
     if style == 'det':
         snr = det_snr_from_grads(grads)
     elif style == 'stoch':
-        snr = stoch_snr_from_grads(grads)
+        snr, std = stoch_snr_from_grads(grads)
     else:
         raise ValueError()
 
-    return snr
+    return snr, std
 
 
 def stoch_snr_from_grads(grads):
-    # 1 x last_layer_size x (second_to_last_layer_size + 1)
-    mean = np.mean(grads, axis=0, keepdims=True)
-    var = np.mean((grads - mean) ** 2, axis=0, keepdims=True)
+    snr_list = []
+    assert grads.shape[0] % 435 == 0
+    for i in range(grads.shape[0] // 435):
+        g = grads[:435 * (i + 1), :]
+        mean = np.mean(g, axis=0, keepdims=True)
+        var = np.mean((g - mean) ** 2, axis=0, keepdims=True)
 
-    # variance of mean = variance of sample / num_samples (batches)
-    var = var / grads.shape[0]
+        # variance of mean = variance of sample / num_samples (batches)
+        var = var / g.shape[0]
+        snr = np.linalg.norm(mean) / np.linalg.norm(np.sqrt(var))
+        snr_list.append(snr)
 
-    # 1 x last_layer_size (x secon_to_last_layer_size)
+    # print(snr_list)
+    # print(np.mean(snr_list))
+    # print(np.std(snr_list))
 
-    #     # 1) mean / stddev in every direction of the loss surface (all weights individually)
-    #     snr = np.abs(mean) / np.sqrt(var)
-    #     # scalar
-    #     snr = snr.mean()
+    snr = np.mean(snr_list)
+    snr_std = np.std(snr_list, ddof=1)
 
-    # 2) mean / stddev in norm: magnitude of mean and stddev in the high-dim loss surface
-    snr = np.linalg.norm(mean) / np.linalg.norm(np.sqrt(var))
+    # # 1 x last_layer_size x (second_to_last_layer_size + 1)
+    # mean = np.mean(grads, axis=0, keepdims=True)
+    # var = np.mean((grads - mean) ** 2, axis=0, keepdims=True)
+    #
+    # # variance of mean = variance of sample / num_samples (batches)
+    # var = var / grads.shape[0]
+    #
+    # # 1 x last_layer_size (x secon_to_last_layer_size)
+    #
+    # #     # 1) mean / stddev in every direction of the loss surface (all weights individually)
+    # #     snr = np.abs(mean) / np.sqrt(var)
+    # #     # scalar
+    # #     snr = snr.mean()
+    #
+    # # 2) mean / stddev in norm: magnitude of mean and stddev in the high-dim loss surface
+    # snr = np.linalg.norm(mean) / np.linalg.norm(np.sqrt(var))
 
-    return snr
+    return snr, snr_std
 
 
 def det_snr_from_grads(grads):
@@ -264,8 +283,8 @@ def compute_snr(weight_path, bias_path, style):
     # num_batches x last_layer_size x (second_to_last_layer_size + 1)
     grads = np.concatenate((weight_grads, bias_grads), axis=-1)
 
-    snr = snr_from_grads(grads, style)
-    return snr
+    snr, std = snr_from_grads(grads, style)
+    return snr, std
 
 
 def compute_gradients(args):
@@ -600,7 +619,9 @@ class Arguments:
 def main():
     # Greedy
     # 1043
-    g_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_11:43:14'
+    # g_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_11:43:14'
+    # 1042
+    g_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_11:42:26'
 
     # 1046
     # g_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-22_13:10:25'
@@ -628,7 +649,7 @@ def main():
     iters = None
     style = 'stoch'
     force = False
-    runs = 1
+    runs = 3
 
     # mode, traj, m_epoch, data_runs, sr, accel, acquisitions
     jobs = [
@@ -687,9 +708,10 @@ def main():
         args = Arguments(run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size, force)
 
         weight_path, bias_path, param_dir = compute_gradients(args)
-        snr = compute_snr(weight_path, bias_path, style)
+        snr, std = compute_snr(weight_path, bias_path, style)
 
         summary_dict = {'snr': str(snr),
+                        'snr_std': str(std),
                         'weight_grads': str(weight_path),
                         'bias_grads': str(bias_path)}
 
@@ -699,8 +721,9 @@ def main():
             json.dump(summary_dict, f, indent=4)
 
         results_dict[i] = {'job': (mode, traj, m_epoch, data_runs, sr, accel, steps),
-                           'snr': str(snr)}
-        print(f'SNR: {snr}')
+                           'snr': str(snr),
+                           'snr_std': str(std)}
+        print(f'SNR: {snr}, STD: {std}')
 
     savestr = f'{datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")}.json'
     save_dir = pathlib.Path(os.getcwd()) / f'snr_results_{style}'
