@@ -73,7 +73,7 @@ class DataTransform:
     Data Transformer for training U-Net models.
     """
 
-    def __init__(self, mask_func, resolution, which_challenge, use_seed=False):
+    def __init__(self, mask_func, resolution, which_challenge, use_seed=False, real=True, low_res_320=True):
         """
         Args:
             mask_func (common.subsample.MaskFunc): A function that can create a mask of
@@ -90,6 +90,8 @@ class DataTransform:
         self.resolution = resolution
         self.which_challenge = which_challenge
         self.use_seed = use_seed
+        self.real = real  # whether to use real valued k-space
+        self.low_res_320 = low_res_320
 
     def __call__(self, kspace, target, attrs, fname, slice):
         """
