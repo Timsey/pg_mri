@@ -61,6 +61,7 @@
       <w>pretrained</w>
       <w>probs</w>
       <w>psnr</w>
+      <w>psnrs</w>
       <w>pythonpath</w>
       <w>pytorch</w>
       <w>randrow</w>

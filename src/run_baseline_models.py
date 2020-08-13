@@ -10,6 +10,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from piq import psnr
 
 from tensorboardX import SummaryWriter
 
@@ -51,6 +52,20 @@ def create_data_range_dict(loader):
     return data_range_dict
 
 
+def get_psnr(unnorm_recons, gt_exp, data_range):
+    # Have to reshape to batch . trajectories x res x res and then reshape back to batch x trajectories x res x res
+    # because of psnr implementation
+    psnr_recons = torch.clamp(unnorm_recons, 0., 10.).reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution,
+                                                              args.resolution).to('cpu')
+    psnr_gt = gt_exp.reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution, args.resolution).to('cpu')
+    # First duplicate data range over trajectories, then reshape: this to ensure alignment with recon and gt.
+    psnr_data_range = data_range.expand(-1, gt_exp.size(1), -1, -1)
+    psnr_data_range = psnr_data_range.reshape(gt_exp.size(0) * gt_exp.size(1), 1, 1, 1).to('cpu')
+    psnr_scores = psnr(psnr_recons, psnr_gt, reduction='none', data_range=psnr_data_range)
+    psnr_scores = psnr_scores.reshape(gt_exp.size(0), gt_exp.size(1))
+    return psnr_scores
+
+
 def get_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model, recon, data_range):
     unnorm_recon = recon[:, 0:1, ...] * gt_std + gt_mean  # Back to original scale for metric
 
@@ -64,7 +79,7 @@ def get_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, re
     tk = res - acquired_num
     batch_train_rows = torch.zeros((mask.size(0), tk)).long().to(args.device)
     for sl, sl_mask in enumerate(mask.squeeze(1).squeeze(1).squeeze(-1)):
-        batch_train_rows[sl] = (sl_mask == 0).nonzero().flatten()
+        batch_train_rows[sl] = torch.nonzero((sl_mask == 0), as_tuple=False).flatten()
 
     # Acquire chosen rows, and compute the improvement target for each (batched)
     # shape = batch x rows = k x res x res
@@ -241,6 +256,7 @@ def run_average_oracle(args, recon_model):
 
     rows = []
     ssims = np.array([0. for _ in range(args.acquisition_steps + 1)])
+    psnrs = np.array([0. for _ in range(args.acquisition_steps + 1)])
     with torch.no_grad():
         for step in range(args.acquisition_steps + 1):
             train_loader, dev_loader, test_loader, _ = create_data_loaders(args, shuffle_train=False)
@@ -292,7 +308,12 @@ def run_average_oracle(args, recon_model):
                 unnorm_recon = recon[:, 0:1, :, :] * gt_std + gt_mean
                 ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
                                 data_range=data_range).mean(dim=(-1, -2)).sum()
+                psnr_val = psnr(torch.clamp(unnorm_recon, 0., 10.).to('cpu'),
+                                unnorm_gt.to('cpu'),
+                                reduction='none',
+                                data_range=data_range.to('cpu')).sum()
                 ssims[step] += ssim_val.item()
+                psnrs[step] += psnr_val.item()
 
                 if args.model_type == 'oracle_average' or (args.model_type == 'notime_oracle_average' and step == 0):
                     tbs += mask.size(0)
@@ -319,12 +340,13 @@ def run_average_oracle(args, recon_model):
                     print(tbs)
 
     ssims /= tbs
+    psnrs /= tbs
 
     for step in range(args.acquisition_steps):
         outputs[-1][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
     save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
 
-    return ssims, time.perf_counter() - start
+    return ssims, psnrs, time.perf_counter() - start
 
 
 def run_oracle(args, recon_model, dev_loader, data_range_dict):
@@ -333,6 +355,7 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
     """
 
     ssims = 0
+    psnrs = 0
     epoch_outputs = defaultdict(list)
     start = time.perf_counter()
     tbs = 0
@@ -366,10 +389,16 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
             unnorm_recon = recon[:, 0:1, :, :] * gt_std + gt_mean
             init_ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
                                  data_range=data_range).mean(dim=(-1, -2)).sum()
+            init_psnr_val = psnr(torch.clamp(unnorm_recon, 0., 10.).to('cpu'),
+                                 unnorm_gt.to('cpu'),
+                                 reduction='none',
+                                 data_range=data_range.to('cpu')).sum()
             # init_ssim_val = ssim(recon[:, 0:1, :, :], gt, size_average=False,
             #                      data_range=data_range).mean(dim=(-1, -2)).sum()
-
             batch_ssims = [init_ssim_val.item()]
+            batch_psnrs = [init_psnr_val.item()]
+
+            overc = 0  # For equispace twosided
 
             for step in range(args.acquisition_steps):
                 if args.model_type == 'oracle':
@@ -410,6 +439,24 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
                     output = torch.randn((mask.size(0), mask.size(-2)))
                     output[:, acquired] = 0.
                     output = output.to(args.device)
+                elif args.model_type == 'equispace_twosided':
+                    interval = int(args.resolution * (1 - 1 / args.accelerations[0]))
+                    output = torch.zeros((mask.size(0), mask.size(-2)))
+                    equi = interval // args.acquisition_steps
+                    # Something like this
+                    if step <= args.acquisition_steps // 2:
+                        select = (step + 1) * equi - 1
+                    else:
+                        select = args.resolution - (step - args.acquisition_steps // 2) * equi
+                    output[:, select] = 1.
+                    output = output.to(args.device)
+                elif args.model_type == 'equispace_onesided':
+                    interval = int(args.resolution * (1 - 1 / args.accelerations[0]) / 2)
+                    output = torch.zeros((mask.size(0), mask.size(-2)))
+                    equi = interval // args.acquisition_steps
+                    select = (step + 1) * equi - 1
+                    output[:, select] = 1.
+                    output = output.to(args.device)
                 elif args.model_type == 'spectral':
                     # K-space similarity model proxy from Zhang et al. (2019)
                     # Instead of training an evaluator to determine kspace distance, we calculate ground truth
@@ -430,19 +477,26 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
                                 data_range=data_range).mean(dim=(-1, -2)).sum()
                 # ssim_val = ssim(impro_input[:, 0:1, :, :], gt, size_average=False,
                 #                 data_range=data_range).mean(dim=(-1, -2)).sum()
+                psnr_val = psnr(torch.clamp(unnorm_recon, 0., 10.).to('cpu'),
+                                unnorm_gt.to('cpu'),
+                                reduction='none',
+                                data_range=data_range.to('cpu')).sum()
+
                 # eventually shape = al_steps
                 batch_ssims.append(ssim_val.item())
+                batch_psnrs.append(psnr_val.item())
 
             # shape = al_steps
             ssims += np.array(batch_ssims)
-
+            psnrs += np.array(batch_psnrs)
     ssims /= tbs
+    psnrs /= tbs
 
     # for step in range(args.acquisition_steps):
     #     outputs[-1][step + 1] = np.concatenate(epoch_outputs[step + 1], axis=0).tolist()
     # save_json(args.run_dir / 'preds_per_step_per_epoch.json', outputs)
 
-    return ssims, time.perf_counter() - start
+    return ssims, psnrs, time.perf_counter() - start
 
 
 def main(args):
@@ -477,7 +531,7 @@ def main(args):
     writer = SummaryWriter(log_dir=args.run_dir / 'summary')
 
     if args.model_type in ['oracle_average', 'notime_oracle_average']:
-        oracle_ssims, oracle_time = run_average_oracle(args, recon_model)
+        oracle_ssims, oracle_psnrs, oracle_time = run_average_oracle(args, recon_model)
     else:
         # Create data loaders
         train_loader, dev_loader, test_loader, _ = create_data_loaders(args, shuffle_train=True)
@@ -504,36 +558,42 @@ def main(args):
         # # dev_loader = train_loader
 
         if args.data_split in ['dev', 'val']:
-            oracle_ssims, oracle_time = run_oracle(args, recon_model, dev_loader, data_range_dict)
+            oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, dev_loader, data_range_dict)
         elif args.data_split == 'test':
-            oracle_ssims, oracle_time = run_oracle(args, recon_model, test_loader, data_range_dict)
+            oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, test_loader, data_range_dict)
         elif args.data_split == 'train':
-            oracle_ssims, oracle_time = run_oracle(args, recon_model, train_loader, data_range_dict)
+            oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, train_loader, data_range_dict)
         else:
             raise ValueError
 
     ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_ssims)])
+    psnrs_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_psnrs)])
     logging.info(f'  DevSSIM = [{ssims_str}]')
-    logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
+    logging.info(f'  DevPSNR = [{psnrs_str}]')
+    logging.info(f'  Time = {oracle_time:.2f}s')
 
     # For storing in wandb
     for epoch in range(args.num_epochs + 1):
         logging.info(f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] ')
         if args.model_type == 'random':
             if args.data_split in ['dev', 'val']:
-                oracle_ssims, oracle_time = run_oracle(args, recon_model, dev_loader, data_range_dict)
+                oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, dev_loader, data_range_dict)
             elif args.data_split == 'test':
-                oracle_ssims, oracle_time = run_oracle(args, recon_model, test_loader, data_range_dict)
+                oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, test_loader, data_range_dict)
             else:
-                oracle_ssims, oracle_time = run_oracle(args, recon_model, train_loader, data_range_dict)
+                oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, train_loader, data_range_dict)
             ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_ssims)])
+            psnrs_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_psnrs)])
             logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
         logging.info(f'  DevSSIM = [{ssims_str}]')
+        logging.info(f'  DevPSNR = [{psnrs_str}]')
         if args.wandb:
             if args.data_split in ['val', 'test']:
                 wandb.log({'val_ssims': {str(key): val for key, val in enumerate(oracle_ssims)}}, step=epoch)
+                wandb.log({'val_psnrs': {str(key): val for key, val in enumerate(oracle_psnrs)}}, step=epoch)
             elif args.data_split == 'train':
                 wandb.log({'train_ssims': {str(key): val for key, val in enumerate(oracle_ssims)}}, step=epoch)
+                wandb.log({'train_psnrs': {str(key): val for key, val in enumerate(oracle_psnrs)}}, step=epoch)
             else:
                 raise ValueError()
     writer.close()
@@ -551,7 +611,8 @@ def create_arg_parser():
 
     parser.add_argument('--model-type', choices=['center_sym', 'center_asym_left', 'center_asym_right',
                                                  'random', 'oracle', 'oracle_average', 'spectral',
-                                                 'notime_oracle', 'notime_oracle_average'], required=True,
+                                                 'notime_oracle', 'notime_oracle_average', 'equispace_onesided',
+                                                 'equispace_twosided'], required=True,
                         help='Type of model to use.')
     parser.add_argument('--data-range', type=str, default='volume',
                         help="Type of data range to use. Options are 'volume' and 'gt'.")

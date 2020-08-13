@@ -112,13 +112,25 @@ class DataTransform:
 
         Additionally returns the used acceleration and center fraction for evaluation purposes.
 
-        Changed from original by mapping kspace onto 320x320 size and normalising based on the real valued images,
-         before applying mask, for AL consistency.
+        Changed from original: now starting from GT RSS, which makes more sense if doing singlecoil.
         """
+
+        # Now obtain kspace from gt for consistency between knee and brain datasets
+        target = transforms.to_tensor(target)
+        assert target.size(-2) == target.size(-1) == 320  # Check data
+        if self.low_res_320:
+            kspace = transforms.fft2(target)
+            # Crop in kspace to obtain low resolution image of full body part
+            kspace = transforms.complex_center_crop(kspace, (self.resolution, self.resolution))
+            target = transforms.complex_abs(transforms.ifft2(kspace))
+        else:  # Crop in image space
+            target = transforms.center_crop(target, (self.resolution, self.resolution))
+            kspace = transforms.fft2(target)
+
         # Note: abs(crop(ifft2(kspace))) == target (errors of order 1/500 of minimum value in either image)
-        kspace = transforms.to_tensor(kspace)
+        # kspace = transforms.to_tensor(kspace)
         seed = None if not self.use_seed else tuple(map(ord, fname))
-        kspace = self.fix_kspace(kspace)  # We need this for Active Learning
+        # kspace = self.fix_kspace(kspace)  # We need this for Active Learning
         masked_kspace, mask = transforms.apply_mask(kspace, self.mask_func, seed)
         # Inverse Fourier Transform to get zero filled solution
         zf = transforms.ifft2(masked_kspace)

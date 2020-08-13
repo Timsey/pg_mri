@@ -483,6 +483,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                     loss = loss.mean() / args.batches_step
                                     loss.backward()
                             elif args.baseline_type == 'selfstep':
+                                gamma_vec = [args.gamma**t for t in range(step, args.acquisition_steps)]
+                                gamma_ten = torch.tensor(gamma_vec).unsqueeze(-1).unsqueeze(-1).to(args.device)
                                 # step x batch x 1
                                 avg_rewards_tensor = torch.mean(reward_tensor, dim=2, keepdim=True)
                                 # Get number of trajectories for correct average (see Wouter's paper)
@@ -490,8 +492,8 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                 # REINFORCE with self-baselines
                                 # batch x k
                                 loss = -1 * (logprobs * torch.sum(
-                                    (reward_tensor[step:, :, :] -
-                                     avg_rewards_tensor[step:, :, :]), dim=0)) / (num_traj - 1)
+                                    gamma_ten * (reward_tensor[step:, :, :] - avg_rewards_tensor[step:, :, :]),
+                                    dim=0)) / (num_traj - 1)
                                 # batch
                                 loss = loss.sum(dim=1)
                             else:
@@ -499,7 +501,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
                             if args.baseline_type != 'self':
                                 # Average over batch (and trajectories except when self baseline)
-                                # Divicde by batches_step to mimic taking mean over larger batch
+                                # Divide by batches_step to mimic taking mean over larger batch
                                 loss = loss.mean() / args.batches_step
                                 loss.backward()  # Store gradients
 
@@ -981,6 +983,9 @@ def create_arg_parser():
     parser.add_argument('--in-chans', default=2, type=int, help='Number of image input channels'
                         'E.g. set to 2 if input is reconstruction and uncertainty map')
     parser.add_argument('--fc-size', default=512, type=int, help='Size (width) of fully connected layer(s).')
+
+    parser.add_argument('--gamma', type=float, default=1,
+                        help='Discount factor in RL. Currently only used for non-greedy training.')
 
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
