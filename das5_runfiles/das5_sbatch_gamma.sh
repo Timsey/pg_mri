@@ -16,4 +16,4 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 HDF5_USE_FILE_LOCKING=FALSE PYTHONPATH=/var/scratch
 --lr 5e-5 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --num-epochs 50 --num-pools 4 --pool-stride 1 \
 --estimator full_step --num-trajectories 16 --num-dev-trajectories 8 --greedy False --data-range volume --baseline-type selfstep \
 --scheduler-type multistep --lr-multi-step-size 10 20 30 40 --lr-gamma .5 --acquisition None --center-volume True --batches-step 1 \
---wandb True --do-train-ssim True
+--wandb True --do-train-ssim True --gamma 1 --project mrimpro_gamma
