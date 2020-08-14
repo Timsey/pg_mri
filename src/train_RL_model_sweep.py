@@ -22,6 +22,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
+from piq import psnr
 
 import sys
 # sys.path.insert(0, '/home/timsey/Projects/mrimpro/')  # noqa: F401
@@ -107,7 +108,22 @@ def create_data_range_dict(args, loader):
     return data_range_dict
 
 
-def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, unnorm_gt, data_range, k):
+def compute_psnr(args, unnorm_recons, gt_exp, data_range):
+    # Have to reshape to batch . trajectories x res x res and then reshape back to batch x trajectories x res x res
+    # because of psnr implementation
+    psnr_recons = torch.clamp(unnorm_recons, 0., 10.).reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution,
+                                                              args.resolution).to('cpu')
+    psnr_gt = gt_exp.reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution, args.resolution).to('cpu')
+    # First duplicate data range over trajectories, then reshape: this to ensure alignment with recon and gt.
+    psnr_data_range = data_range.expand(-1, gt_exp.size(1), -1, -1)
+    psnr_data_range = psnr_data_range.reshape(gt_exp.size(0) * gt_exp.size(1), 1, 1, 1).to('cpu')
+    psnr_scores = psnr(psnr_recons, psnr_gt, reduction='none', data_range=psnr_data_range)
+    psnr_scores = psnr_scores.reshape(gt_exp.size(0), gt_exp.size(1))
+    return psnr_scores
+
+
+def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, unnorm_gt,
+                data_range, k, comp_psnr=True):
     batch_mk = masked_kspace.view(mask.size(0) * k, 1, res, res, 2)
     # Get new zf: shape = (batch . num_rows x 1 x res x res)
     zf, _, _ = get_new_zf(batch_mk)
@@ -120,8 +136,11 @@ def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, un
     unnorm_recons = recons * gt_std + gt_mean
     gt_exp = unnorm_gt.expand(-1, k, -1, -1)
     # scores = batch x k (channels), base_score = batch x 1
-    scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
-    return scores, impro_input
+    ssim_scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
+    if comp_psnr:
+        psnr_scores = compute_psnr(args, unnorm_recons, gt_exp, data_range)
+        return ssim_scores, psnr_scores, impro_input
+    return ssim_scores, impro_input
 
 
 def get_policy_probs(output, unacquired):
@@ -283,7 +302,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
                 else:  # Final step: only now compute reconstruction and return
                     scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
-                                                      gt_mean, gt_std, unnorm_gt, data_range, k)
+                                                      gt_mean, gt_std, unnorm_gt, data_range, k, comp_psnr=False)
 
                     # Store returns in final index of reward tensor (returns = reward_tensor[:, :, -1])
                     # reward_tensor[:, :, step] = scores - base_score
@@ -338,7 +357,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
 
             elif args.estimator in ['full_local', 'full_step']:
                 scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
-                                                  gt_mean, gt_std, unnorm_gt, data_range, k)
+                                                  gt_mean, gt_std, unnorm_gt, data_range, k, comp_psnr=False)
                 # Store rewards shape = (batch x num_trajectories)
                 # reward_tensor[:, :, step] = scores - base_score
                 reward = scores - base_score
@@ -551,7 +570,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
 
     epoch_outputs = defaultdict(list)
 
-    ssims = 0
+    ssims, psnrs = 0, 0
     tbs = 0
     start = time.perf_counter()
 
@@ -586,7 +605,14 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
             init_ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
                                  data_range=data_range).mean(dim=(-1, -2)).sum()
 
+            # Clamp to min 0 for PSNR computation
+            init_psnr_val = psnr(torch.clamp(unnorm_recon, 0., 10.).to('cpu'),
+                                 unnorm_gt.to('cpu'),
+                                 reduction='none',
+                                 data_range=data_range.to('cpu')).sum()
+
             batch_ssims = [init_ssim_val.item()]
+            batch_psnrs = [init_psnr_val.item()]
 
             # Initial policy
             impro_output, _ = impro_model_forward_pass(args, model, impro_input, mask.squeeze(1).squeeze(1).squeeze(-1))
@@ -627,17 +653,17 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                         unacquired = (mask == 0).squeeze(-3).squeeze(-1).float()
                         # Get policy on remaining rows (essentially just renormalisation) for next step
                         probs = get_policy_probs(impro_output, unacquired)
-                        scores = torch.zeros((gt.size(0), k)) + init_ssim_val / gt.size(0)
+                        ssim_scores = torch.zeros((gt.size(0), k)) + init_ssim_val / gt.size(0)
 
                     else:  # Final step: only now compute reconstruction and return
-                        scores, _ = get_rewards(args, res, mask, masked_kspace, recon_model,
-                                                gt_mean, gt_std, unnorm_gt, data_range, k)
+                        ssim_scores, psnr_scores, _ = get_rewards(args, res, mask, masked_kspace, recon_model,
+                                                                  gt_mean, gt_std, unnorm_gt, data_range, k)
                         # Predictions are the same every step, so don't need to store anything in epoch_outputs
 
                 # Option 3)
                 elif args.estimator in ['full_step', 'full_local']:
-                    scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
-                                                      gt_mean, gt_std, unnorm_gt, data_range, k)
+                    ssim_scores, psnr_scores, impro_input = get_rewards(args, res, mask, masked_kspace, recon_model,
+                                                                        gt_mean, gt_std, unnorm_gt, data_range, k)
 
                     # If not final step: get policy for next step from current reconstruction
                     if step != args.acquisition_steps - 1:
@@ -660,12 +686,15 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                     raise ValueError(f'{args.estimator} is not a valid estimator!')
 
                 # Average over trajectories, sum over batch dimension
-                batch_ssims.append(scores.mean(dim=1).sum().item())
+                batch_ssims.append(ssim_scores.mean(dim=1).sum().item())
+                batch_psnrs.append(psnr_scores.mean(dim=1).sum().item())
 
-            # shape = al_steps
+                # shape = al_steps
             ssims += np.array(batch_ssims)
+            psnrs += np.array(batch_psnrs)
 
     ssims /= tbs
+    psnrs /= tbs
 
     if not train:
         # for step in epoch_outputs.keys():
@@ -674,16 +703,21 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
 
         for step, val in enumerate(ssims):
             writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
+            writer.add_scalar('DevPSNR_step{}'.format(step), psnrs[step], epoch)
 
         if args.wandb:
             wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
             wandb.log({f'val_ssims.{args.acquisition_steps}': ssims[-1]}, step=epoch + 1)
             wandb.log({f'val_ssims_{args.acquisition_steps}': ssims[-1]}, step=epoch + 1)
+            wandb.log({'val_psnrs': {str(key): val for key, val in enumerate(psnrs)}}, step=epoch + 1)
+            wandb.log({f'val_psnrs.{args.acquisition_steps}': psnrs[-1]}, step=epoch + 1)
+            wandb.log({f'val_psnrs_{args.acquisition_steps}': psnrs[-1]}, step=epoch + 1)
     else:
         if args.wandb:
             wandb.log({'train_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+            wandb.log({'train_psnrs': {str(key): val for key, val in enumerate(psnrs)}}, step=epoch + 1)
 
-    return ssims, time.perf_counter() - start
+    return ssims, psnrs, time.perf_counter() - start
 
 
 def train_and_eval(args, recon_args, recon_model):
@@ -776,17 +810,21 @@ def train_and_eval(args, recon_args, recon_model):
 
     if not args.resume:
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
-                                                           True, train_data_range_dict)
+            train_ssims, train_psnrs, train_score_time = evaluate_recons(args, -1, recon_model, model, train_loader,
+                                                                         writer, True, train_data_range_dict)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+            train_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(train_psnrs)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
-            logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
+            logging.info(f'TrainPSNR = [{train_psnrs_str}]')
+            logging.info(f'TrainScoreTime = {train_score_time:.2f}s')
 
-        dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
+        dev_ssims, dev_psnrs, dev_score_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
                                                    False, dev_data_range_dict)
         dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+        dev_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_psnrs)])
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
-        logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+        logging.info(f'  DevPSNR = [{dev_psnrs_str}]')
+        logging.info(f'DevScoreTime = {dev_score_time:.2f}s')
 
     if args.resume and args.baseline_type not in ['self', 'selfstep']:
         raise ValueError('Cannot resume with original baseline for running average baselines.')
@@ -794,29 +832,33 @@ def train_and_eval(args, recon_args, recon_model):
     baseline = None
 
     for epoch in range(start_epoch, args.num_epochs):
-        scheduler.step()
         train_loss, train_time, baseline = train_epoch(args, epoch, recon_model, model, train_loader, optimiser,
                                                        writer, baseline, train_data_range_dict)
+        scheduler.step()
         dev_loss, dev_loss_time = 0, 0
-        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
-                                                   False, dev_data_range_dict)
+        dev_ssims, dev_psnrs, dev_score_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
+                                                               False, dev_data_range_dict)
 
         logging.info(
             f'Epoch = [{epoch:3d}/{args.num_epochs:3d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
 
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer, True,
-                                                           train_data_range_dict)
+            train_ssims, train_psnrs, train_score_time = evaluate_recons(args, epoch, recon_model, model, train_loader,
+                                                                         writer, True, train_data_range_dict)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+            train_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(train_psnrs)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
+            logging.info(f'TrainPSNR = [{train_psnrs_str}]')
         else:
-            train_ssim_time = 0
+            train_score_time = 0
 
         dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+        dev_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_psnrs)])
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+        logging.info(f'  DevPSNR = [{dev_psnrs_str}]')
         logging.info(f'TrainTime = {train_time:.2f}s DevLossTime = {dev_loss_time:.2f}s '
-                     f'TrainSSIMTime = {train_ssim_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s')
+                     f'TrainScoreTime = {train_score_time:.2f}s DevScoreTime = {dev_score_time:.2f}s')
 
         save_model(args, args.run_dir, epoch, model, optimiser, None, False, args.milestones)
 
@@ -863,15 +905,18 @@ def test(args, recon_args, recon_model):
         raise ValueError(f'{args.data_range} is not valid')
 
     impro_args.num_dev_trajectories = args.num_dev_trajectories
-    test_ssims, test_ssim_time = evaluate_recons(impro_args, -1, recon_model, model, test_loader, writer,
-                                                 False, test_data_range_dict)
+    test_ssims, test_psnrs, test_score_time = evaluate_recons(impro_args, -1, recon_model, model, test_loader, writer,
+                                                              False, test_data_range_dict)
     if args.wandb:
         for epoch in range(args.num_epochs + 1):
             wandb.log({'val_ssims': {str(key): val for key, val in enumerate(test_ssims)}}, step=epoch + 1)
+            wandb.log({'val_psnrs': {str(key): val for key, val in enumerate(test_psnrs)}}, step=epoch + 1)
 
     test_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(test_ssims)])
+    test_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(test_psnrs)])
     logging.info(f'  DevSSIM = [{test_ssims_str}]')
-    logging.info(f'DevSSIMTime = {test_ssim_time:.2f}s')
+    logging.info(f'  DevPSNR = [{test_psnrs_str}]')
+    logging.info(f'DevScoreTime = {test_score_time:.2f}s')
     print(test_ssims_str)
 
     writer.close()
@@ -1005,6 +1050,8 @@ def create_arg_parser():
 
     parser.add_argument('--wandb',  type=str2bool, default=False,
                         help='Whether to use wandb logging for this run.')
+    parser.add_argument('--project',  type=str, default='mrimpro',
+                        help='Wandb project name to use.')
 
     parser.add_argument('--resume',  type=str2bool, default=False,
                         help='Continue training previous run?')
@@ -1043,10 +1090,10 @@ def wrap_main(args):
     if args.wandb:
         if args.resume:
             assert args.run_id is not None, "run_id must be given if resuming with wandb."
-            wandb.init(project='mrimpro', resume=args.run_id)
+            wandb.init(project=args.project, resume=args.run_id)
             # wandb.restore(run_path=f"mrimpro/{args.run_id}")
         else:
-            wandb.init(project='mrimpro', config=args)
+            wandb.init(project=args.project, config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False

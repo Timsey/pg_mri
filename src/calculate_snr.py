@@ -198,9 +198,10 @@ def snr_from_grads(grads, style):
 
 def stoch_snr_from_grads(grads):
     snr_list = []
+    # TODO: Fix this hardcoding
     assert grads.shape[0] % 435 == 0
     for i in range(grads.shape[0] // 435):
-        g = grads[:435 * (i + 1), :]
+        g = grads[435 * i:435 * (i + 1), :]
         mean = np.mean(g, axis=0, keepdims=True)
         var = np.mean((g - mean) ** 2, axis=0, keepdims=True)
 

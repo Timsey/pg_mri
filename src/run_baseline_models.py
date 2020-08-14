@@ -398,8 +398,6 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
             batch_ssims = [init_ssim_val.item()]
             batch_psnrs = [init_psnr_val.item()]
 
-            overc = 0  # For equispace twosided
-
             for step in range(args.acquisition_steps):
                 if args.model_type == 'oracle':
                     output = get_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model,
@@ -477,6 +475,8 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
                                 data_range=data_range).mean(dim=(-1, -2)).sum()
                 # ssim_val = ssim(impro_input[:, 0:1, :, :], gt, size_average=False,
                 #                 data_range=data_range).mean(dim=(-1, -2)).sum()
+                # Clamp to min 0 because PSNR involves logs and reconstruction sometimes gives slightly negative values
+                # when trying to match a near-zero value. How does fastMRI deal with this?
                 psnr_val = psnr(torch.clamp(unnorm_recon, 0., 10.).to('cpu'),
                                 unnorm_gt.to('cpu'),
                                 reduction='none',
