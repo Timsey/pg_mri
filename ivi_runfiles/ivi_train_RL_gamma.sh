@@ -27,4 +27,4 @@ CUDA_VISIBLE_DEVICES=0,1 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_mode
 --lr 5e-5 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --num-epochs 50 --num-pools 4 --pool-stride 1 \
 --estimator full_step --num-trajectories 8 --num-dev-trajectories 4 --greedy False --data-range volume --baseline-type selfstep \
 --scheduler-type multistep --lr-multi-step-size 10 20 30 40 --lr-gamma .5 --acquisition None --center-volume True --batches-step 4 \
---wandb True --do-train-ssim True --project mrimpro_gamma --original_setting True --low_res False --gamma 1.0
+--wandb True --do-train-ssim True --project mrimpro_gamma --original_setting True --low_res False --gamma 0.1
