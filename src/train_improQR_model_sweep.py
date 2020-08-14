@@ -823,6 +823,13 @@ def create_arg_parser():
     parser.add_argument('--impro_model_list', nargs='+', type=str, default=[None],
                         help='List of model paths for multi-testing.')
 
+    parser.add_argument('--project',  type=str, default='mrimpro',
+                        help='Wandb project name to use.')
+    parser.add_argument('--original_setting', type=str2bool, default=True,
+                        help='Whether to use original data setting used for knee experiments.')
+    parser.add_argument('--low_res', type=str2bool, default=False,
+                        help='Whether to use a low res full image, rather than a high res small image when cropping.')
+
     return parser
 
 
@@ -850,12 +857,12 @@ def wrap_main(args):
     if args.wandb:
         if args.resume:
             assert args.run_id is not None, "run_id must be given if resuming with wandb."
-            wandb.init(project='mrimpro', resume=args.run_id)
+            wandb.init(project=args.project, resume=args.run_id)
             # wandb.restore(run_path=f"mrimpro/{args.run_id}")
         elif args.test_multi:
-            wandb.init(project='mrimpro', reinit=True)
+            wandb.init(project=args.project, reinit=True)
         else:
-            wandb.init(project='mrimpro', config=args)
+            wandb.init(project=args.project, config=args)
 
     # To get reproducible behaviour, additionally set args.num_workers = 0 and disable cudnn
     # torch.backends.cudnn.enabled = False

@@ -73,7 +73,7 @@ class DataTransform:
     Data Transformer for training U-Net models.
     """
 
-    def __init__(self, mask_func, resolution, which_challenge, use_seed=False, real=True, low_res_320=True):
+    def __init__(self, mask_func, resolution, which_challenge, use_seed=False, original_setting=True, low_res=False):
         """
         Args:
             mask_func (common.subsample.MaskFunc): A function that can create a mask of
@@ -90,8 +90,8 @@ class DataTransform:
         self.resolution = resolution
         self.which_challenge = which_challenge
         self.use_seed = use_seed
-        self.real = real  # whether to use real valued k-space
-        self.low_res_320 = low_res_320
+        self.low_res = low_res  # Whether to use low res full image or high res small image when cropping
+        self.original_setting = original_setting  # Use original fix_kspace + image crop setting
 
     def __call__(self, kspace, target, attrs, fname, slice):
         """
@@ -115,22 +115,29 @@ class DataTransform:
         Changed from original: now starting from GT RSS, which makes more sense if doing singlecoil.
         """
 
-        # Now obtain kspace from gt for consistency between knee and brain datasets
-        # target = transforms.to_tensor(target)
-        # assert target.size(-2) == target.size(-1) == 320  # Check data
-        # if self.low_res_320:
-        #     kspace = transforms.rfft2(target)
-        #     # Crop in kspace to obtain low resolution image of full body part
-        #     kspace = transforms.complex_center_crop(kspace, (self.resolution, self.resolution))
-        #     target = transforms.complex_abs(transforms.ifft2(kspace))
-        # else:  # Crop in image space
-        #     target = transforms.center_crop(target, (self.resolution, self.resolution))
-        #     kspace = transforms.fft2(target)
+        if self.original_setting:
+            # Uses kspace passed to this function as basis. Transforms to image space, then abs + crop, transform back
+            # to obtain kspace used (self.fix_kspace) in rest of algorithm. Implementation is artefact of experiments
+            # with uncertainty based methods.
+            # Note: abs(crop(ifft2(kspace))) == target (errors of order 1/500 of minimum value in either image)
+            kspace = transforms.to_tensor(kspace)
+            kspace = self.fix_kspace(kspace)  # We need this for Active Learning
+        else:
+            # Now obtain kspace from target for consistency between knee and brain datasets.
+            # Target is used as ground truth as before.
+            target = transforms.to_tensor(target)
+            assert target.size(-2) == target.size(-1) == 320  # Check data
+            if self.low_res:
+                # Downscale image in kspace, to obtain low res full image, rather than high res small image
+                kspace = transforms.rfft2(target)
+                # Crop in kspace to obtain low resolution image of full body part
+                kspace = transforms.complex_center_crop(kspace, (self.resolution, self.resolution))
+                target = transforms.complex_abs(transforms.ifft2(kspace))
+            else:  # Crop in image space
+                target = transforms.center_crop(target, (self.resolution, self.resolution))
+                kspace = transforms.fft2(target)
 
-        # Note: abs(crop(ifft2(kspace))) == target (errors of order 1/500 of minimum value in either image)
-        kspace = transforms.to_tensor(kspace)
         seed = None if not self.use_seed else tuple(map(ord, fname))
-        kspace = self.fix_kspace(kspace)  # We need this for Active Learning
         masked_kspace, mask = transforms.apply_mask(kspace, self.mask_func, seed)
         # Inverse Fourier Transform to get zero filled solution
         zf = transforms.ifft2(masked_kspace)
@@ -187,7 +194,8 @@ def create_fastmri_datasets(args, train_mask, dev_mask, test_mask):
 
     train_data = SliceData(
         root=train_path,
-        transform=DataTransform(train_mask, args.resolution, args.challenge),
+        transform=DataTransform(train_mask, args.resolution, args.challenge, use_seed=False,
+                                original_setting=args.original_setting, low_res=args.low_res),
         sample_rate=args.sample_rate,
         challenge=args.challenge,
         acquisition=args.acquisition,
@@ -201,7 +209,8 @@ def create_fastmri_datasets(args, train_mask, dev_mask, test_mask):
     dev_sample_rate = args.sample_rate * mult
     dev_data = SliceData(
         root=dev_path,
-        transform=DataTransform(dev_mask, args.resolution, args.challenge, use_seed=True),
+        transform=DataTransform(dev_mask, args.resolution, args.challenge, use_seed=True,
+                                original_setting=args.original_setting, low_res=args.low_res),
         sample_rate=dev_sample_rate,
         challenge=args.challenge,
         acquisition=args.acquisition,
@@ -210,7 +219,8 @@ def create_fastmri_datasets(args, train_mask, dev_mask, test_mask):
     )
     test_data = SliceData(
         root=test_path,
-        transform=DataTransform(test_mask, args.resolution, args.challenge, use_seed=True),
+        transform=DataTransform(test_mask, args.resolution, args.challenge, use_seed=True,
+                                original_setting=args.original_setting, low_res=args.low_res),
         sample_rate=args.sample_rate,
         challenge=args.challenge,
         acquisition=args.acquisition,

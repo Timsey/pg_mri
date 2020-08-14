@@ -676,6 +676,13 @@ def create_arg_parser():
     parser.add_argument('--data-split', type=str, default='dev',
                         help='Which data split to use.')
 
+    parser.add_argument('--project',  type=str, default='mrimpro',
+                        help='Wandb project name to use.')
+    parser.add_argument('--original_setting', type=str2bool, default=True,
+                        help='Whether to use original data setting used for knee experiments.')
+    parser.add_argument('--low_res', type=str2bool, default=False,
+                        help='Whether to use a low res full image, rather than a high res small image when cropping.')
+
     return parser
 
 
@@ -694,7 +701,7 @@ if __name__ == '__main__':
         torch.cuda.manual_seed(args.seed)
 
     if args.wandb:
-        wandb.init(project='mrimpro', config=args)
+        wandb.init(project=args.project, config=args)
 
     if args.use_data_state:
         args.train_state = TRAIN_STATE
