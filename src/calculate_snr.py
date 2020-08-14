@@ -185,23 +185,23 @@ def load_impro_model(checkpoint_file):
     return model, args, start_epoch, optimizer
 
 
-def snr_from_grads(grads, style):
-    if style == 'det':
-        snr = det_snr_from_grads(grads)
-    elif style == 'stoch':
-        snr, std = stoch_snr_from_grads(grads)
+def snr_from_grads(args, grads):
+    if args.style == 'det':
+        snr = det_snr_from_grads(args, grads)
+    elif args.style == 'stoch':
+        snr, std = stoch_snr_from_grads(args, grads)
     else:
         raise ValueError()
 
     return snr, std
 
 
-def stoch_snr_from_grads(grads):
+def stoch_snr_from_grads(args, grads):
     snr_list = []
-    # TODO: Fix this hardcoding
-    assert grads.shape[0] % 435 == 0
-    for i in range(grads.shape[0] // 435):
-        g = grads[435 * i:435 * (i + 1), :]
+    assert grads.shape[0] % args.data_runs == 0, 'Something went wrong with concatenating gradients over runs.'
+    grads_per_run = grads.shape[0] // args.data_runs
+    for i in range(grads.shape[0] // grads_per_run):
+        g = grads[grads_per_run * i:grads_per_run * (i + 1), :]
         mean = np.mean(g, axis=0, keepdims=True)
         var = np.mean((g - mean) ** 2, axis=0, keepdims=True)
 
@@ -237,7 +237,7 @@ def stoch_snr_from_grads(grads):
     return snr, snr_std
 
 
-def det_snr_from_grads(grads):
+def det_snr_from_grads(args, grads):
     # num_batches x last_layer_size x (second_to_last_layer_size + 1)
 
     # 1 x last_layer_size x (second_to_last_layer_size + 1)
@@ -270,7 +270,7 @@ def det_snr_from_grads(grads):
     return snr
 
 
-def compute_snr(weight_path, bias_path, style):
+def compute_snr(args, weight_path, bias_path):
     with open(weight_path, 'rb') as f:
         weight_list = pickle.load(f)
     with open(bias_path, 'rb') as f:
@@ -284,7 +284,7 @@ def compute_snr(weight_path, bias_path, style):
     # num_batches x last_layer_size x (second_to_last_layer_size + 1)
     grads = np.concatenate((weight_grads, bias_grads), axis=-1)
 
-    snr, std = snr_from_grads(grads, style)
+    snr, std = snr_from_grads(args, grads)
     return snr, std
 
 
@@ -322,6 +322,8 @@ def compute_gradients(args):
                 bias_grads = pickle.load(f)
             start_run = r
             break
+        else:
+            print('Gradients not already stored.')
 
     model, impro_args, start_epoch, optimiser = load_impro_model(args.impro_model_checkpoint)
     add_impro_args(args, impro_args)
@@ -394,7 +396,7 @@ def compute_gradients(args):
         ssims /= tbs
         print(f"     - ssims: \n       {ssims}")
 
-        print(f"     - Saving grads of run {r + 1} to: \n       {param_dir}")
+        print(f"     - Adding grads of run {r + 1} to: \n       {param_dir}")
         with open(weight_path, 'wb') as f:
             pickle.dump(weight_grads, f)
         with open(bias_path, 'wb') as f:
@@ -579,7 +581,8 @@ def nongreedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, 
 
 
 class Arguments:
-    def __init__(self, run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size, force):
+    def __init__(self, run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size,
+                 force, style):
         self.accelerations = [accel]
         self.reciprocals_in_center = [1]
         self.acquisition_steps = steps
@@ -611,10 +614,14 @@ class Arguments:
         self.iters = iters
         self.m_epoch = m_epoch
         self.force_computation = force
+        self.style = style
 
         self.use_sensitivity = False
 
         self.train_state = self.dev_state = self.test_state = None
+
+        self.original_setting = True
+        self.low_res = False
 
 
 def main():
@@ -706,10 +713,11 @@ def main():
         else:
             raise ValueError()
 
-        args = Arguments(run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size, force)
+        args = Arguments(run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size,
+                         force, style)
 
         weight_path, bias_path, param_dir = compute_gradients(args)
-        snr, std = compute_snr(weight_path, bias_path, style)
+        snr, std = compute_snr(args, weight_path, bias_path)
 
         summary_dict = {'snr': str(snr),
                         'snr_std': str(std),
