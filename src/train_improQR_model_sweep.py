@@ -22,6 +22,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 from tensorboardX import SummaryWriter
+from piq import psnr
 
 import sys
 # sys.path.insert(0, '/home/timsey/Projects/mrimpro/')  # noqa: F401
@@ -372,13 +373,13 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
     """
     model.eval()
 
-    ssims = 0
+    ssims, psnrs = 0, 0
     # # strategy: acquisition step: filename: [recons]
     # recons = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
     # targets = defaultdict(list)
 
     epoch_outputs = defaultdict(list)
-    tbs = 0
+    tbs = 0  # data set size counter
     start = time.perf_counter()
     with torch.no_grad():
         for it, data in enumerate(dev_loader):
@@ -409,6 +410,11 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
             unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
             init_ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
                                  data_range=data_range).mean(dim=(-1, -2)).sum()
+            # Clamp to min 0 for PSNR computation
+            init_psnr_val = psnr(torch.clamp(unnorm_recon, 0., 10.).to('cpu'),
+                                 unnorm_gt.to('cpu'),
+                                 reduction='none',
+                                 data_range=data_range.to('cpu')).sum()
 
             base_mask = mask
             base_masked_kspace = masked_kspace
@@ -421,7 +427,9 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                 mask = base_mask.clone()
                 masked_kspace = base_masked_kspace.clone()
                 impro_input = base_impro_input.clone()
+
                 batch_ssims = [init_ssim_val.item()]
+                batch_psnrs = [init_psnr_val.item()]
 
                 for step in range(args.acquisition_steps):
                     # Improvement model output
@@ -440,7 +448,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                                 if row in unacquired[j, :].nonzero().flatten():
                                     next_rows.append(row)
                                     break
-                        # TODO: moving to device should happen only once before both loops. Should just mutate object after
+                    # TODO: moving to device should happen only once before both loops. Should just mutate object after
                         next_rows = torch.tensor(next_rows).long().to(args.device)
                     elif args.acq_strat == 'sample':
                         # Acquire rows by sampling
@@ -459,25 +467,32 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                     impro_input, _, _, _, mask, masked_kspace = acquire_row(args, kspace, masked_kspace, next_rows, mask,
                                                                             recon_model)
 
-                    # TODO: this is weird. The recon model is trained to reconstruct targets normalised by the original
-                    #  zf image's normalisation constants, but now we're un-normalising the outputted reconstruction by
-                    #  the few-step-ahead zf image's normalisation constants. This un-normalised output reconstruction
-                    #  may thus have a different scale that the target image (which is normalised by the original zf image's
-                    #  normalisation constants). We must either use the original zf's constants for un-normalisation when
-                    #  computing SSIM scores, or we use the target's normalisation constants, which seems more justified.
-                    #  Note that currently we don't do normalisation based on the targets, so this will require some
-                    #  changes to the DataLoader.
+                # TODO: this is weird. The recon model is trained to reconstruct targets normalised by the original
+                #  zf image's normalisation constants, but now we're un-normalising the outputted reconstruction by
+                #  the few-step-ahead zf image's normalisation constants. This un-normalised output reconstruction
+                #  may thus have a different scale that the target image (which is normalised by the original zf image's
+                #  normalisation constants). We must either use the original zf's constants for un-normalisation when
+                #  computing SSIM scores, or we use the target's normalisation constants, which seems more justified.
+                #  Note that currently we don't do normalisation based on the targets, so this will require some
+                #  changes to the DataLoader.
                     unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
                     # shape = 1
                     ssim_val = ssim(unnorm_recon, unnorm_gt, size_average=False,
                                     data_range=data_range).mean(dim=(-1, -2)).sum()
+                    psnr_val = psnr(torch.clamp(unnorm_recon, 0., 10.).to('cpu'),
+                                    unnorm_gt.to('cpu'),
+                                    reduction='none',
+                                    data_range=data_range.to('cpu')).sum()
                     # eventually shape = al_steps
                     batch_ssims.append(ssim_val.item())
+                    batch_psnrs.append(psnr_val.item())
 
                 # shape = al_steps
                 ssims += np.array(batch_ssims)
+                psnrs += np.array(batch_psnrs)
 
     ssims /= (tbs * args.num_test_trajectories)
+    psnrs /= (tbs * args.num_test_trajectories)
 
     if not train:
         # for step in range(args.acquisition_steps):
@@ -486,16 +501,21 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
 
         for step, val in enumerate(ssims):
             writer.add_scalar('DevSSIM_step{}'.format(step), val, epoch)
+            writer.add_scalar('DevPSNR_step{}'.format(step), psnrs[step], epoch)
 
         if args.wandb:
             wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
             wandb.log({f'val_ssims.{args.acquisition_steps}': ssims[-1]}, step=epoch + 1)
             wandb.log({f'val_ssims_{args.acquisition_steps}': ssims[-1]}, step=epoch + 1)
+            wandb.log({'val_psnrs': {str(key): val for key, val in enumerate(psnrs)}}, step=epoch + 1)
+            wandb.log({f'val_psnrs.{args.acquisition_steps}': psnrs[-1]}, step=epoch + 1)
+            wandb.log({f'val_psnrs_{args.acquisition_steps}': psnrs[-1]}, step=epoch + 1)
     else:
         if args.wandb:
             wandb.log({'train_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
+            wandb.log({'train_psnrs': {str(key): val for key, val in enumerate(psnrs)}}, step=epoch + 1)
 
-    return ssims, time.perf_counter() - start
+    return ssims, psnrs, time.perf_counter() - start
 
 
 def train_and_eval(args, recon_args, recon_model):
@@ -592,17 +612,21 @@ def train_and_eval(args, recon_args, recon_model):
 
     if not args.resume:
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, -1, recon_model, model, train_loader, writer,
-                                                           True, train_data_range_dict)
+            train_ssims, train_psnrs, train_score_time = evaluate_recons(args, -1, recon_model, model, train_loader,
+                                                                         writer, True, train_data_range_dict)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+            train_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(train_psnrs)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
-            logging.info(f'TrainSSIMTime = {train_ssim_time:.2f}s')
+            logging.info(f'TrainPSNR = [{train_psnrs_str}]')
+            logging.info(f'TrainScoreTime = {train_score_time:.2f}s')
 
-        dev_ssims, dev_ssim_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
-                                                   False, dev_data_range_dict)
+        dev_ssims, dev_psnrs, dev_score_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
+                                                               False, dev_data_range_dict)
         dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+        dev_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_psnrs)])
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
-        logging.info(f'DevSSIMTime = {dev_ssim_time:.2f}s')
+        logging.info(f'  DevPSNR = [{dev_psnrs_str}]')
+        logging.info(f'DevScoreTime = {dev_score_time:.2f}s')
 
     for epoch in range(start_epoch, args.num_epochs):
         scheduler.step()
@@ -610,25 +634,29 @@ def train_and_eval(args, recon_args, recon_model):
                                              k, train_data_range_dict)
         # dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, dev_data_range_dict)
         dev_loss, dev_loss_time = 0, 0
-        dev_ssims, dev_ssim_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
-                                                   False, dev_data_range_dict)
+        dev_ssims, dev_psnrs, dev_score_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
+                                                               False, dev_data_range_dict)
 
         logging.info(
             f'Epoch = [{epoch:3d}/{args.num_epochs:3d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
 
         if args.do_train_ssim:
-            train_ssims, train_ssim_time = evaluate_recons(args, epoch, recon_model, model, train_loader, writer,
-                                                           True, train_data_range_dict)
+            train_ssims, train_psnrs, train_score_time = evaluate_recons(args, epoch, recon_model, model, train_loader,
+                                                                         writer, True, train_data_range_dict)
             train_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(train_ssims)])
+            train_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(train_psnrs)])
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
+            logging.info(f'TrainPSNR = [{train_psnrs_str}]')
         else:
             train_ssim_time = 0
 
         dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
+        dev_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_psnrs)])
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
+        logging.info(f'  DevPSNR = [{dev_psnrs_str}]')
         logging.info(f'TrainTime = {train_time:.2f}s DevLossTime = {dev_loss_time:.2f}s '
-                     f'TrainSSIMTime = {train_ssim_time:.2f}s DevSSIMTime = {dev_ssim_time:.2f}s')
+                     f'TrainScoreTime = {train_score_time:.2f}s DevScoreTime = {dev_score_time:.2f}s')
 
         save_model(args, args.run_dir, epoch, model, optimiser, None, False, args.milestones)
     writer.close()
@@ -672,15 +700,18 @@ def test(args, recon_args, recon_model):
     else:
         raise ValueError(f'{args.data_range} is not valid')
 
-    test_ssims, test_ssim_time = evaluate_recons(impro_args, -1, recon_model, model, test_loader, writer,
-                                                 False, test_data_range_dict)
+    test_ssims, test_psnrs, test_score_time = evaluate_recons(impro_args, -1, recon_model, model, test_loader, writer,
+                                                              False, test_data_range_dict)
     if args.wandb:
         for epoch in range(args.num_epochs):
             wandb.log({'val_ssims': {str(key): val for key, val in enumerate(test_ssims)}}, step=epoch + 1)
+            wandb.log({'val_psnrs': {str(key): val for key, val in enumerate(test_psnrs)}}, step=epoch + 1)
 
     test_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(test_ssims)])
+    test_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(test_psnrs)])
     logging.info(f'  DevSSIM = [{test_ssims_str}]')
-    logging.info(f'DevSSIMTime = {test_ssim_time:.2f}s')
+    logging.info(f'  DevPSNR = [{test_psnrs_str}]')
+    logging.info(f'DevScoreTime = {test_score_time:.2f}s')
 
     writer.close()
 

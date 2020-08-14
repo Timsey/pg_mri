@@ -689,7 +689,7 @@ def evaluate_recons(args, epoch, recon_model, model, dev_loader, writer, train, 
                 batch_ssims.append(ssim_scores.mean(dim=1).sum().item())
                 batch_psnrs.append(psnr_scores.mean(dim=1).sum().item())
 
-                # shape = al_steps
+            # shape = al_steps
             ssims += np.array(batch_ssims)
             psnrs += np.array(batch_psnrs)
 
@@ -819,7 +819,7 @@ def train_and_eval(args, recon_args, recon_model):
             logging.info(f'TrainScoreTime = {train_score_time:.2f}s')
 
         dev_ssims, dev_psnrs, dev_score_time = evaluate_recons(args, -1, recon_model, model, dev_loader, writer,
-                                                   False, dev_data_range_dict)
+                                                               False, dev_data_range_dict)
         dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
         dev_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_psnrs)])
         logging.info(f'  DevSSIM = [{dev_ssims_str}]')
