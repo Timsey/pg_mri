@@ -1029,9 +1029,6 @@ def create_arg_parser():
                         'E.g. set to 2 if input is reconstruction and uncertainty map')
     parser.add_argument('--fc-size', default=512, type=int, help='Size (width) of fully connected layer(s).')
 
-    parser.add_argument('--gamma', type=float, default=1,
-                        help='Discount factor in RL. Currently only used for non-greedy training.')
-
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
     parser.add_argument('--use-data-state', type=str2bool, default=False,
@@ -1061,6 +1058,8 @@ def create_arg_parser():
     parser.add_argument('--impro_model_list', nargs='+', type=str, default=[None],
                         help='List of model paths for multi-testing.')
 
+    parser.add_argument('--gamma', type=float, default=1,
+                        help='Discount factor in RL. Currently only used for non-greedy training.')
     parser.add_argument('--project',  type=str, default='mrimpro',
                         help='Wandb project name to use.')
     parser.add_argument('--original_setting', type=str2bool, default=True,
