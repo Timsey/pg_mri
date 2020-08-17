@@ -834,7 +834,6 @@ def train_and_eval(args, recon_args, recon_model):
     for epoch in range(start_epoch, args.num_epochs):
         train_loss, train_time, baseline = train_epoch(args, epoch, recon_model, model, train_loader, optimiser,
                                                        writer, baseline, train_data_range_dict)
-        scheduler.step()
         dev_loss, dev_loss_time = 0, 0
         dev_ssims, dev_psnrs, dev_score_time = evaluate_recons(args, epoch, recon_model, model, dev_loader, writer,
                                                                False, dev_data_range_dict)
@@ -859,6 +858,8 @@ def train_and_eval(args, recon_args, recon_model):
         logging.info(f'  DevPSNR = [{dev_psnrs_str}]')
         logging.info(f'TrainTime = {train_time:.2f}s DevLossTime = {dev_loss_time:.2f}s '
                      f'TrainScoreTime = {train_score_time:.2f}s DevScoreTime = {dev_score_time:.2f}s')
+
+        scheduler.step()
 
         save_model(args, args.run_dir, epoch, model, optimiser, None, False, args.milestones)
 

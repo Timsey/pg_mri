@@ -301,6 +301,8 @@ def compute_gradients(args):
     if weight_path.exists() and bias_path.exists() and not args.force_computation:
         print(f'Gradients already stored in: \n    {weight_path}\n    {bias_path}')
         return weight_path, bias_path, param_dir
+    else:
+        print('All gradients not already stored.')
 
     start_run = 0
     weight_grads = []
@@ -322,8 +324,6 @@ def compute_gradients(args):
                 bias_grads = pickle.load(f)
             start_run = r
             break
-        else:
-            print('Gradients not already stored.')
 
     model, impro_args, start_epoch, optimiser = load_impro_model(args.impro_model_checkpoint)
     add_impro_args(args, impro_args)
@@ -738,12 +738,13 @@ def main():
     save_dir = pathlib.Path(os.getcwd()) / f'snr_results_{style}'
     save_dir.mkdir(parents=True, exist_ok=True)
     save_file = save_dir / savestr
-    print(f'\nSaving results to: {save_file}')
-    with open(save_file, 'w') as f:
-        json.dump(results_dict, f, indent=4)
 
     print('\nFinal results:')
     pprint(results_dict)
+
+    print(f'\nSaving results to: {save_file}')
+    with open(save_file, 'w') as f:
+        json.dump(results_dict, f, indent=4)
 
 
 if __name__ == "__main__":

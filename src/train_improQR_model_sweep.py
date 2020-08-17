@@ -629,7 +629,6 @@ def train_and_eval(args, recon_args, recon_model):
         logging.info(f'DevScoreTime = {dev_score_time:.2f}s')
 
     for epoch in range(start_epoch, args.num_epochs):
-        scheduler.step()
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer,
                                              k, train_data_range_dict)
         # dev_loss, dev_loss_time = evaluate(args, epoch, recon_model, model, dev_loader, writer, k, dev_data_range_dict)
@@ -649,7 +648,7 @@ def train_and_eval(args, recon_args, recon_model):
             logging.info(f'TrainSSIM = [{train_ssims_str}]')
             logging.info(f'TrainPSNR = [{train_psnrs_str}]')
         else:
-            train_ssim_time = 0
+            train_score_time = 0
 
         dev_ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(dev_ssims)])
         dev_psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(dev_psnrs)])
@@ -658,6 +657,7 @@ def train_and_eval(args, recon_args, recon_model):
         logging.info(f'TrainTime = {train_time:.2f}s DevLossTime = {dev_loss_time:.2f}s '
                      f'TrainScoreTime = {train_score_time:.2f}s DevScoreTime = {dev_score_time:.2f}s')
 
+        scheduler.step()
         save_model(args, args.run_dir, epoch, model, optimiser, None, False, args.milestones)
     writer.close()
 
