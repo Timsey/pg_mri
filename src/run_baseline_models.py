@@ -5,6 +5,8 @@ import random
 import argparse
 import pathlib
 import wandb
+from random import choice
+from string import ascii_uppercase
 from collections import defaultdict
 
 import numpy as np
@@ -508,9 +510,10 @@ def main(args):
     args = add_mask_params(args, recon_args)
 
     # Create directory to store results in
-    savestr = 'res{}_al{}_accel{}_{}_{}_{}'.format(args.resolution, args.acquisition_steps, args.accelerations,
-                                                   args.model_type, args.recon_model_name,
-                                                   datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
+    savestr = 'res{}_al{}_accel{}_{}_{}_{}_{}'.format(args.resolution, args.acquisition_steps,
+                                                      args.accelerations, args.model_type, args.recon_model_name,
+                                                      datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"),
+                                                      ''.join(choice(ascii_uppercase) for _ in range(5)))
     args.run_dir = args.exp_dir / savestr
     args.run_dir.mkdir(parents=True, exist_ok=False)
 

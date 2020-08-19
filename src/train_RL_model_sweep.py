@@ -17,6 +17,8 @@ import random
 import argparse
 import pathlib
 import wandb
+from random import choice
+from string import ascii_uppercase
 from collections import defaultdict
 
 import numpy as np
@@ -747,10 +749,11 @@ def train_and_eval(args, recon_args, recon_model):
         optimiser = build_optim(args, model.parameters())
         start_epoch = 0
         # Create directory to store results in
-        savestr = 'res{}_al{}_accel{}_{}_{}_k{}_{}'.format(args.resolution, args.acquisition_steps, args.accelerations,
-                                                           args.impro_model_name, args.recon_model_name,
-                                                           args.num_trajectories,
-                                                           datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"))
+        savestr = 'res{}_al{}_accel{}_{}_{}_k{}_{}_{}'.format(args.resolution, args.acquisition_steps,
+                                                              args.accelerations, args.impro_model_name,
+                                                              args.recon_model_name, args.num_trajectories,
+                                                              datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"),
+                                                              ''.join(choice(ascii_uppercase) for _ in range(5)))
         args.run_dir = args.exp_dir / savestr
         args.run_dir.mkdir(parents=True, exist_ok=False)
 
