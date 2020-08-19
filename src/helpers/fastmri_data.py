@@ -28,11 +28,18 @@ class SliceData(Dataset):
             raise ValueError('challenge should be either "singlecoil" or "multicoil"')
 
         self.transform = transform
-        self.recons_key = 'reconstruction_esc' if challenge == 'singlecoil' \
-            else 'reconstruction_rss'
 
         self.examples = []
-        files = sorted(list(pathlib.Path(root).iterdir()))
+        data_path = pathlib.Path(root)
+        if 'brain' in str(data_path):
+            self.dataset = 'brain'
+        else:
+            self.dataset = 'knee'
+        # Using rss for Brain data
+        self.recons_key = 'reconstruction_esc' if self.dataset == 'knee' \
+            else 'reconstruction_rss'
+
+        files = sorted(list(data_path.iterdir()))
         if sample_rate < 1:
             # if state is not None:  # Ensure same data is loaded when initialising the dataset multiple times in script
                 # random.setstate(state)
@@ -43,15 +50,19 @@ class SliceData(Dataset):
         for fname in sorted(files):
             # If 'acquisition' is specified, only slices from volumes that have been gathered using the specified
             # acquisition technique ('CORPD_FBK' or 'CORPDFS_FBK').
-            if acquisition in ('CORPD_FBK', 'CORPDFS_FBK'):
-                with h5py.File(fname) as target:
-                    if acquisition != target.attrs['acquisition']:
-                        continue
-            elif acquisition is not None:
-                raise ValueError("'acquisition' should be 'CORPD_FBK', 'CORPDFS_FBK', "
-                                 "or None; not: {}".format(acquisition))
-            kspace = h5py.File(fname, 'r')['kspace']
-            num_slices = kspace.shape[0]
+            if self.dataset == 'knee':
+                if acquisition in ('CORPD_FBK', 'CORPDFS_FBK'):
+                    with h5py.File(fname) as target:
+                        if acquisition != target.attrs['acquisition']:
+                            continue
+                elif acquisition is not None:
+                    raise ValueError("'acquisition' should be 'CORPD_FBK', 'CORPDFS_FBK', "
+                                     "or None; not: {}".format(acquisition))
+                kspace = h5py.File(fname, 'r')['kspace']
+                num_slices = kspace.shape[0]
+            else:  # Brain data, use all acquisition types? Only have gt stored for this dataset..
+                gt = h5py.File(fname, 'r')[self.recons_key]
+                num_slices = gt.shape[0]
             if center_volume:  # Only use the slices in the center half of the volume
                 self.examples += [(fname, slice) for slice in range(num_slices // 4, 3 * num_slices // 4)]
             else:
@@ -63,8 +74,11 @@ class SliceData(Dataset):
     def __getitem__(self, i):
         fname, slice = self.examples[i]
         with h5py.File(fname, 'r') as data:
-            kspace = data['kspace'][slice]
             target = data[self.recons_key][slice] if self.recons_key in data else None
+            if self.dataset == 'knee':
+                kspace = data['kspace'][slice]
+            else:
+                kspace = None  # Could make this rfft(gt) to have original_setting work with brain data?
             return self.transform(kspace, target, data.attrs, fname.name, slice)
 
 
@@ -122,11 +136,14 @@ class DataTransform:
             # Note: abs(crop(ifft2(kspace))) == target (errors of order 1/500 of minimum value in either image)
             kspace = transforms.to_tensor(kspace)
             kspace = self.fix_kspace(kspace)  # We need this for Active Learning
+            target = transforms.to_tensor(target)
+            # In case resolution is not 320
+            target = transforms.center_crop(target, (self.resolution, self.resolution))
         else:
             # Now obtain kspace from target for consistency between knee and brain datasets.
             # Target is used as ground truth as before.
             target = transforms.to_tensor(target)
-            assert target.size(-2) == target.size(-1) == 320  # Check data
+            # TODO: Brain data has various resolutions, ranging from 213 to 384. Add filter to SliceData?
             if self.low_res:
                 # Downscale image in kspace, to obtain low res full image, rather than high res small image
                 kspace = transforms.rfft2(target)
@@ -148,9 +165,6 @@ class DataTransform:
         zf, zf_mean, zf_std = transforms.normalize_instance(zf, eps=1e-11)
         zf = zf.clamp(-6, 6)
 
-        target = transforms.to_tensor(target)
-        # In case resolution is not 320
-        target = transforms.center_crop(target, (self.resolution, self.resolution))
         # # Normalize target
         # target = transforms.normalize(target, mean, std, eps=1e-11)
         target, gt_mean, gt_std = transforms.normalize_instance(target, eps=1e-11)
