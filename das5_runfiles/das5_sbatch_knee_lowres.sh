@@ -32,7 +32,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 HDF5_USE_FILE_LOCKING=FALSE PYTHONPATH=/var/scratch
 --recon-model-checkpoint /var/scratch/tbbakker/fastMRI-shi/models/unet/al_knee_lowres128_8to4in2/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 16 --report-interval 1000 \
 --num-target-rows 8 --lr 5e-5 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.1 --num-epochs 50 --num-pools 4 --pool-stride 1 \
---estimator wr --acq_strat sample --acquisition None --center-volume False --lr-step-size 40 --wandb True --do-train-ssim True --num-test-trajectories 1 \
+--estimator wr --acq_strat sample --acquisition None --center-volume True --lr-step-size 40 --wandb True --do-train-ssim True --num-test-trajectories 1 \
 --project mrimpro_knee_lowres --original_setting False --low_res True
 
 CUDA_VISIBLE_DEVICES=0,1,2,3 HDF5_USE_FILE_LOCKING=FALSE PYTHONPATH=/var/scratch/tbbakker/anaconda3/envs/fastmri/lib/python3.7/site-packages python -m src.train_improQR_model_sweep \
@@ -40,7 +40,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 HDF5_USE_FILE_LOCKING=FALSE PYTHONPATH=/var/scratch
 --recon-model-checkpoint /var/scratch/tbbakker/fastMRI-shi/models/unet/al_knee_lowres128_8to4in2/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 32 --acquisition-steps 28 --report-interval 1000 \
 --num-target-rows 8 --lr 5e-5 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.1 --num-epochs 50 --num-pools 4 --pool-stride 1 \
---estimator wr --acq_strat sample --acquisition None --center-volume False --lr-step-size 40 --wandb True --do-train-ssim True --num-test-trajectories 1 \
+--estimator wr --acq_strat sample --acquisition None --center-volume True --lr-step-size 40 --wandb True --do-train-ssim True --num-test-trajectories 1 \
 --project mrimpro_knee_lowres --original_setting False --low_res True
 
 
