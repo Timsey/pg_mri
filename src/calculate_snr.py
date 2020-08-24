@@ -591,8 +591,11 @@ class Arguments:
         self.data_path = pathlib.Path('/home/timsey/HDD/data/fastMRI/singlecoil')
         self.recon_model_checkpoint = pathlib.Path(
             '/home/timsey/Projects/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt')
-        self.impro_model_checkpoint = pathlib.Path('/home/timsey/Projects/mrimpro/' + run) / 'model_{}.pt'.format(
-            m_epoch)
+        if m_epoch != 49:
+            self.impro_model_checkpoint = pathlib.Path('/home/timsey/Projects/mrimpro/' + run) / 'model_{}.pt'.format(
+                m_epoch)
+        else:
+            self.impro_model_checkpoint = pathlib.Path('/home/timsey/Projects/mrimpro/' + run) / 'model.pt'
 
         self.sample_rate = sr
         self.acquisition = None
