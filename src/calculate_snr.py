@@ -1,7 +1,9 @@
 import pathlib
 import pickle
-import json
 import os
+import copy
+import json
+import argparse
 import datetime
 import numpy as np
 from pprint import pprint
@@ -10,6 +12,7 @@ import torch
 
 from src.helpers.torch_metrics import ssim
 from src.helpers.data_loading import create_data_loaders
+from src.helpers.utils import load_json, save_json, str2bool, str2none
 from src.impro_models.convpool_model import build_impro_convpool_model
 from src.recon_models.recon_model_utils import (get_new_zf, create_impro_model_input, load_recon_model,
                                                 acquire_new_zf_exp_batch, acquire_new_zf_batch)  # for greedy
@@ -152,6 +155,7 @@ def add_impro_args(args, impro_args):
     args.resolution = impro_args.resolution
     args.in_chans = impro_args.in_chans
     args.run_dir = impro_args.run_dir
+    args.recon_model_name = impro_args.recon_model_name
 
     # For greedy model
     if 'estimator' in impro_args.__dict__:
@@ -192,7 +196,6 @@ def snr_from_grads(args, grads):
         snr, std = stoch_snr_from_grads(args, grads)
     else:
         raise ValueError()
-
     return snr, std
 
 
@@ -288,8 +291,8 @@ def compute_snr(args, weight_path, bias_path):
     return snr, std
 
 
-def compute_gradients(args):
-    param_dir = (f'mepoch{args.m_epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+def compute_gradients(args, epoch):
+    param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
                  f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
     param_dir = args.impro_model_checkpoint.parent / param_dir
     param_dir.mkdir(parents=True, exist_ok=True)
@@ -310,7 +313,7 @@ def compute_gradients(args):
 
     # Check if some part of the gradients already computed
     for r in range(args.data_runs, 0, -1):
-        tmp_param_dir = (f'mepoch{args.m_epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+        tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
                          f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
         tmp_weight_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}_it{args.iters}.pkl'
         tmp_bias_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}_it{args.iters}.pkl'
@@ -580,162 +583,61 @@ def nongreedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, 
     return batch_ssims
 
 
-class Arguments:
-    def __init__(self, run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size,
-                 force, style):
-        self.accelerations = [accel]
-        self.reciprocals_in_center = [1]
-        self.acquisition_steps = steps
-        self.batch_size = batch_size
-
-        self.data_path = pathlib.Path('/home/timsey/HDD/data/fastMRI/singlecoil')
-        self.recon_model_checkpoint = pathlib.Path(
-            '/home/timsey/Projects/fastMRI-shi/models/unet/al_nounc_res128_8to4in2_cvol_symk/model.pt')
-        if m_epoch != 49:
-            self.impro_model_checkpoint = pathlib.Path('/home/timsey/Projects/mrimpro/' + run) / 'model_{}.pt'.format(
-                m_epoch)
-        else:
-            self.impro_model_checkpoint = pathlib.Path('/home/timsey/Projects/mrimpro/' + run) / 'model.pt'
-
-        self.sample_rate = sr
-        self.acquisition = None
-        self.center_volume = True
-        self.dataset = 'fastmri'
-        self.challenge = 'singlecoil'
-
-        self.recon_model_name = 'nounc'
-        self.impro_model_name = 'convpool'
-
-        self.device = 'cuda'
-        self.num_workers = 8
-
-        self.num_trajectories = traj
-        self.batches_step = batches_step
-        self.mode = mode
-
-        self.data_runs = data_runs
-        self.iters = iters
-        self.m_epoch = m_epoch
-        self.force_computation = force
-        self.style = style
-
-        self.use_sensitivity = False
-
-        self.train_state = self.dev_state = self.test_state = None
-
-        self.original_setting = True
-        self.low_res = False
-
-
-def main():
-    # Greedy
-    # 1043
-    # g_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_11:43:14'
-    # 1042
-    g_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_11:42:26'
-
-    # 1046
-    # g_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-22_13:10:25'
-    # 1060
-    g_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-27_10:12:00'
-
-    # Non greedy
-    # 990
-    # ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-17_12:36:03'
-    # 1040
-    # ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k8_2020-05-22_03:58:51'
-    # 1085
-    ng_run = 'exp_results/res128_al16_accel[8]_convpool_nounc_k16_2020-05-29_20:46:15'
-
-    # 1020
-    # ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-18_22:05:41'
-    # 1049
-    # ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-24_11:07:52'
-    # 1071
-    ng_run_long = 'exp_results/res128_al28_accel[32]_convpool_nounc_k8_2020-05-28_10:09:51'
-
-    # Fixed params
-    batch_size = 16
-    batches_step = 1  # or 4
-    iters = None
-    style = 'stoch'
-    force = False
-    runs = 3
-
-    # mode, traj, m_epoch, data_runs, sr, accel, acquisitions
-    jobs = [
-        ['greedy', 16, 0, runs, 0.5, 8, 16],
-        ['nongreedy', 16, 0, runs, 0.5, 8, 16],
-        ['greedy', 16, 0, runs, 0.5, 32, 28],
-        ['nongreedy', 16, 0, runs, 0.5, 32, 28],
-        ['greedy', 16, 9, runs, 0.5, 8, 16],
-        ['nongreedy', 16, 9, runs, 0.5, 8, 16],
-        ['greedy', 16, 9, runs, 0.5, 32, 28],
-        ['nongreedy', 16, 9, runs, 0.5, 32, 28],
-        ['greedy', 16, 19, runs, 0.5, 8, 16],
-        ['nongreedy', 16, 19, runs, 0.5, 8, 16],
-        ['greedy', 16, 19, runs, 0.5, 32, 28],
-        ['nongreedy', 16, 19, runs, 0.5, 32, 28],
-        ['greedy', 16, 29, runs, 0.5, 8, 16],
-        ['nongreedy', 16, 29, runs, 0.5, 8, 16],
-        ['greedy', 16, 29, runs, 0.5, 32, 28],
-        ['nongreedy', 16, 29, runs, 0.5, 32, 28],
-        ['greedy', 16, 39, runs, 0.5, 8, 16],
-        ['nongreedy', 16, 39, runs, 0.5, 8, 16],
-        ['greedy', 16, 39, runs, 0.5, 32, 28],
-        ['nongreedy', 16, 39, runs, 0.5, 32, 28],
-        ['greedy', 16, 49, runs, 0.5, 8, 16],
-        ['nongreedy', 16, 49, runs, 0.5, 8, 16],
-        ['greedy', 16, 49, runs, 0.5, 32, 28],
-        ['nongreedy', 16, 49, runs, 0.5, 32, 28],
-    ]
-
+def main(base_args):
     results_dict = {}
-    for i, (mode, traj, m_epoch, data_runs, sr, accel, steps) in enumerate(jobs):
-        pr_str = (f"Job {i + 1}/{len(jobs)}\n"
-                  f"   mode: {mode:>9}, accel {accel:>2}, steps {steps:>2}\n"
-                  f"   ckpt: {m_epoch:>2}, runs: {data_runs:>2}, srate {sr:>3}, traj {traj:>2}")
-        print(pr_str)
 
-        if mode == 'greedy':
-            if accel == 8 and steps == 16:
-                run = g_run
-            elif accel == 32 and steps == 28:
-                run = g_run_long
-            else:
-                raise ValueError()
+    runs = base_args.data_runs
+    sr = base_args.sample_rate
+    traj = base_args.num_trajectories
+    style = base_args.style
 
-        elif mode == 'nongreedy':
-            if accel == 8 and steps == 16:
-                run = ng_run
-            elif accel == 32 and steps == 28:
-                run = ng_run_long
-            else:
-                raise ValueError()
-
+    for i, run_dir in enumerate(base_args.impro_model_dir_list):
+        args_dict = load_json(base_args.base_impro_model_dir / run_dir / 'args.json')
+        if 'num_target_rows' in args_dict:
+            mode = 'greedy'
+            gamma = None
+        elif 'num_trajectories' in args_dict:
+            mode = 'nongreedy'
+            gamma = args_dict['gamma']
         else:
-            raise ValueError()
+            raise KeyError()
 
-        args = Arguments(run, accel, steps, sr, traj, mode, batches_step, m_epoch, data_runs, iters, batch_size,
-                         force, style)
+        print(args_dict)
 
-        weight_path, bias_path, param_dir = compute_gradients(args)
-        snr, std = compute_snr(args, weight_path, bias_path)
+        accels = json.loads(args_dict['accelerations'])
+        steps = json.loads(args_dict['acquisition_steps'])
+        assert len(accels) == 1, "Various accelerations..."
+        accel = accels[0]
 
-        summary_dict = {'snr': str(snr),
-                        'snr_std': str(std),
-                        'weight_grads': str(weight_path),
-                        'bias_grads': str(bias_path)}
+        for epoch in base_args.epochs:
+            args = copy.deepcopy(base_args)
 
-        summary_path = param_dir / f'snr_{style}_summary.json'
-        print(f"   Saving summary to {summary_path}")
-        with open(summary_path, 'w') as f:
-            json.dump(summary_dict, f, indent=4)
+            if epoch != 49:
+                args.impro_model_checkpoint = base_args.base_impro_model_dir / run_dir / 'model_{}.pt'.format(epoch)
+            else:
+                args.impro_model_checkpoint = base_args.base_impro_model_dir / run_dir / 'model.pt'
 
-        results_dict[i] = {'job': (mode, traj, m_epoch, data_runs, sr, accel, steps),
-                           'snr': str(snr),
-                           'snr_std': str(std)}
-        print(f'SNR: {snr}, STD: {std}')
+            pr_str = (f"Job {i + 1}/{len(base_args.impro_model_dir_list)}\n"
+                      f"   mode: {mode:>9}, accel: {accel:>2}, steps: {steps:>2}, gamma: {gamma},\n"
+                      f"   ckpt: {epoch:>2}, runs: {runs:>2}, srate: {sr:>3}, traj: {traj:>2}")
+            print(pr_str)
+
+            weight_path, bias_path, param_dir = compute_gradients(args, epoch)
+            snr, std = compute_snr(args, weight_path, bias_path)
+
+            summary_dict = {'snr': str(snr),
+                            'snr_std': str(std),
+                            'weight_grads': str(weight_path),
+                            'bias_grads': str(bias_path)}
+
+            summary_path = param_dir / f'snr_{style}_summary.json'
+            print(f"   Saving summary to {summary_path}")
+            save_json(summary_path, summary_dict)
+
+            results_dict[i] = {'job': (mode, traj, epoch, runs, sr, accel, steps, gamma),
+                               'snr': str(snr),
+                               'snr_std': str(std)}
+            print(f'SNR: {snr}, STD: {std}')
 
     savestr = f'{datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")}.json'
     save_dir = pathlib.Path(os.getcwd()) / f'snr_results_{style}'
@@ -746,9 +648,89 @@ def main():
     pprint(results_dict)
 
     print(f'\nSaving results to: {save_file}')
-    with open(save_file, 'w') as f:
-        json.dump(results_dict, f, indent=4)
+    save_json(save_file, results_dict)
+
+
+def create_arg_parser():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument('--dataset', default='fastmri', help='Dataset type to use.')
+    parser.add_argument('--challenge', type=str, default='singlecoil',
+                        help='Which challenge for fastMRI training.')
+    parser.add_argument('--data-path', type=pathlib.Path, default=None,
+                        help='Path to the dataset.')
+
+    parser.add_argument('--sample-rate', type=float, default=0.04,
+                        help='Fraction of total volumes to include')
+    parser.add_argument('--acquisition', type=str2none, default=None,
+                        help='Use only volumes acquired using the provided acquisition method. Options are: '
+                             'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
+    parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, default=None,
+                        help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
+                        'set to zero_filled.')
+
+    parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Which device to train on. Set to "cuda" to use the GPU')
+
+    parser.add_argument('--accelerations', nargs='+', default=[8], type=int,
+                        help='Ratio of k-space columns to be sampled. If multiple values are '
+                             'provided, then one of those is chosen uniformly at random for '
+                             'each volume.')
+    parser.add_argument('--reciprocals-in-center', nargs='+', default=[1], type=float,
+                        help='Inverse fraction of rows (after subsampling) that should be in the center. E.g. if half '
+                             'of the sampled rows should be in the center, this should be set to 2. All combinations '
+                             'of acceleration and reciprocals-in-center will be used during training (every epoch a '
+                             'volume randomly gets assigned an acceleration and center fraction.')
+    parser.add_argument('--acquisition-steps', default=10, type=int, help='Acquisition steps to train for per image.')
+    parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
+
+    # Bools
+    parser.add_argument('--use-sensitivity', type=str2bool, default=False,
+                        help='Whether to use reconstruction model sensitivity as input to the improvement model.')
+    parser.add_argument('--center-volume', type=str2bool, default=True,
+                        help='If set, only the center slices of a volume will be included in the dataset. This '
+                             'removes the most noisy images from the data.')
+    parser.add_argument('--data-parallel', type=str2bool, default=True,
+                        help='If set, use multiple GPUs using data parallelism')
+
+    # Sweep params
+    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators')
+    parser.add_argument('--use-data-state', type=str2bool, default=False,
+                        help='Whether to use fixed data state for random data selection.')
+    parser.add_argument('--batches-step', type=int, default=1,
+                        help='Number of batches to compute before doing an optimizer step.')
+
+    parser.add_argument('--original_setting', type=str2bool, default=True,
+                        help='Whether to use original data setting used for knee experiments.')
+    parser.add_argument('--low_res', type=str2bool, default=False,
+                        help='Whether to use a low res full image, rather than a high res small image when cropping.')
+
+    parser.add_argument('--impro_model_dir_list', nargs='+', type=str, default=[None],
+                        help='List of model dirs for modelts to calculate SNR for.')
+    parser.add_argument('--base_impro_model_dir', type=pathlib.Path, default=None,
+                        help='Base dir for impro models.')
+
+    parser.add_argument('--epochs', nargs='+', type=int, default=[0, 9, 19, 29, 39, 49],
+                        help='Epochs at which to calculate SNR.')
+    parser.add_argument('--data_runs', type=int, default=3,
+                        help='Number of times to run same SNR experiment for averaging.')
+    parser.add_argument('--iters', type=int, default=1000000,
+                        help='Number of batches to compute SNR for per run.')
+    parser.add_argument('--force_computation', type=str2bool, default=False,
+                        help='Whether to force recomputing SNR if already stored on disk.')
+    parser.add_argument('--style', type=str, choices=['stoch', 'det'],
+                        help='SNR style to use: stochastic or deterministic.')
+    parser.add_argument('--num-trajectories', type=int, default=16,
+                        help='Number of trajectories to sample SNR.')
+
+    return parser
 
 
 if __name__ == "__main__":
-    main()
+    import torch.multiprocessing
+    torch.multiprocessing.set_start_method('spawn')
+
+    base_args = create_arg_parser().parse_args()
+
+    main(base_args)
