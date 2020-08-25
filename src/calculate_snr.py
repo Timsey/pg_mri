@@ -7,6 +7,7 @@ import argparse
 import datetime
 import numpy as np
 from pprint import pprint
+from collections import defaultdict
 
 import torch
 
@@ -156,6 +157,8 @@ def add_impro_args(args, impro_args):
     args.in_chans = impro_args.in_chans
     args.run_dir = impro_args.run_dir
     args.recon_model_name = impro_args.recon_model_name
+    args.impro_model_name = impro_args.impro_model_name
+    args.acquisition_steps = impro_args.acquisition_steps
 
     # For greedy model
     if 'estimator' in impro_args.__dict__:
@@ -387,7 +390,7 @@ def compute_gradients(args, epoch):
             if cbatch == args.batches_step:
                 # Store gradients for SNR
                 for name, param in model.named_parameters():
-                    if name == "module.fc_out.4.weight":
+                    if name == "module.fc_out.4.weight":  # TODO: don't hardcode this
                         weight_grads.append(param.grad.cpu().numpy())
                     elif name == "module.fc_out.4.bias":
                         bias_grads.append(param.grad.cpu().numpy())
@@ -584,7 +587,7 @@ def nongreedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, 
 
 
 def main(base_args):
-    results_dict = {}
+    results_dict = defaultdict(lambda: defaultdict(dict))
 
     runs = base_args.data_runs
     sr = base_args.sample_rate
@@ -609,16 +612,17 @@ def main(base_args):
         assert len(accels) == 1, "Various accelerations..."
         accel = accels[0]
 
-        for epoch in base_args.epochs:
+        for j, epoch in enumerate(base_args.epochs):
             args = copy.deepcopy(base_args)
+            args.mode = mode
 
             if epoch != 49:
                 args.impro_model_checkpoint = base_args.base_impro_model_dir / run_dir / 'model_{}.pt'.format(epoch)
             else:
                 args.impro_model_checkpoint = base_args.base_impro_model_dir / run_dir / 'model.pt'
 
-            pr_str = (f"Job {i + 1}/{len(base_args.impro_model_dir_list)}\n"
-                      f"   mode: {mode:>9}, accel: {accel:>2}, steps: {steps:>2}, gamma: {gamma},\n"
+            pr_str = (f"Job {i*len(base_args.epochs)+j+1}/{len(base_args.impro_model_dir_list) * len(base_args.epochs)}"
+                      f"\n   mode: {mode:>9}, accel: {accel:>2}, steps: {steps:>2}, gamma: {gamma},\n"
                       f"   ckpt: {epoch:>2}, runs: {runs:>2}, srate: {sr:>3}, traj: {traj:>2}")
             print(pr_str)
 
@@ -634,9 +638,9 @@ def main(base_args):
             print(f"   Saving summary to {summary_path}")
             save_json(summary_path, summary_dict)
 
-            results_dict[i] = {'job': (mode, traj, epoch, runs, sr, accel, steps, gamma),
-                               'snr': str(snr),
-                               'snr_std': str(std)}
+            results_dict[run_dir][f'Epoch: {epoch}'] = {'job': (mode, traj, runs, sr, accel, steps, gamma),
+                                                        'snr': str(snr),
+                                                        'snr_std': str(std)}
             print(f'SNR: {snr}, STD: {std}')
 
     savestr = f'{datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")}.json'
@@ -682,7 +686,7 @@ def create_arg_parser():
                              'of the sampled rows should be in the center, this should be set to 2. All combinations '
                              'of acceleration and reciprocals-in-center will be used during training (every epoch a '
                              'volume randomly gets assigned an acceleration and center fraction.')
-    parser.add_argument('--acquisition-steps', default=10, type=int, help='Acquisition steps to train for per image.')
+    parser.add_argument('--acquisition-steps', default=16, type=int, help='Acquisition steps to train for per image.')
     parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
 
     # Bools
@@ -732,5 +736,17 @@ if __name__ == "__main__":
     torch.multiprocessing.set_start_method('spawn')
 
     base_args = create_arg_parser().parse_args()
+
+    # TODO: Remove state stuff from dataloaders?
+
+    if base_args.use_data_state:
+        from src.helpers.states import DEV_STATE, TRAIN_STATE, TEST_STATE
+        base_args.train_state = TRAIN_STATE
+        base_args.dev_state = DEV_STATE
+        base_args.test_state = TEST_STATE
+    else:
+        base_args.train_state = None
+        base_args.dev_state = None
+        base_args.test_state = None
 
     main(base_args)

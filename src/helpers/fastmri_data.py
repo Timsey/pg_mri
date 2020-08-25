@@ -43,7 +43,7 @@ class SliceData(Dataset):
         if sample_rate < 1:
             # if state is not None:  # Ensure same data is loaded when initialising the dataset multiple times in script
                 # random.setstate(state)
-            random.seed(0)
+            random.seed(0)  # TODO: This only works because we don't use random again in the same script: reset state
             random.shuffle(files)  # Same behaviour across runs is already guaranteed by setting the seed for random
             num_files = round(len(files) * sample_rate)
             files = files[:num_files]
@@ -135,7 +135,7 @@ class DataTransform:
             # with uncertainty based methods.
             # Note: abs(crop(ifft2(kspace))) == target (errors of order 1/500 of minimum value in either image)
             kspace = transforms.to_tensor(kspace)
-            kspace = self.fix_kspace(kspace)  # We need this for Active Learning
+            kspace = self.fix_kspace(kspace)  # We need this for Active Learning with uncertainty methods
             target = transforms.to_tensor(target)
             # In case resolution is not 320
             target = transforms.center_crop(target, (self.resolution, self.resolution))
@@ -152,7 +152,7 @@ class DataTransform:
                 target = transforms.complex_abs(transforms.ifft2(kspace))
             else:  # Crop in image space
                 target = transforms.center_crop(target, (self.resolution, self.resolution))
-                kspace = transforms.fft2(target)
+                kspace = transforms.rfft2(target)
 
         seed = None if not self.use_seed else tuple(map(ord, fname))
         masked_kspace, mask = transforms.apply_mask(kspace, self.mask_func, seed)
