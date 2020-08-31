@@ -207,6 +207,7 @@ def stoch_snr_from_grads(args, grads):
     assert grads.shape[0] % args.data_runs == 0, 'Something went wrong with concatenating gradients over runs.'
     grads_per_run = grads.shape[0] // args.data_runs
     for i in range(grads.shape[0] // grads_per_run):
+        # Grab gradients belonging to a single run
         g = grads[grads_per_run * i:grads_per_run * (i + 1), :]
         mean = np.mean(g, axis=0, keepdims=True)
         var = np.mean((g - mean) ** 2, axis=0, keepdims=True)
@@ -308,7 +309,40 @@ def compute_gradients(args, epoch):
         print(f'Gradients already stored in: \n    {weight_path}\n    {bias_path}')
         return weight_path, bias_path, param_dir
     else:
-        print('All gradients not already stored.')
+        print('Exact job gradients not already stored. Checking same params but higher number of runs...')
+
+    # Check if all gradients already stored in file for more runs
+    for r in range(1, 11, 1):  # Check up to 10 runs
+        # For old models
+        tmp_param_dir = (f'mepoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+                         f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
+        tmp_weight_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}_itNone.pkl'
+        tmp_bias_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}_itNone.pkl'
+
+        # tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+        #                  f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
+        # tmp_weight_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}_it{args.iters}.pkl'
+        # tmp_bias_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}_it{args.iters}.pkl'
+        # If computation already stored for a higher number of runs, just grab the relevant bit and do not recompute.
+        if tmp_weight_path.exists() and tmp_bias_path.exists() and not args.force_computation:
+            print(f'Gradients up to run {r} already stored in: \n    {tmp_weight_path}\n    {tmp_bias_path}')
+            with open(tmp_weight_path, 'rb') as f:
+                full_weight_grads = pickle.load(f)
+            with open(tmp_bias_path, 'rb') as f:
+                full_bias_grads = pickle.load(f)
+
+            # Get relevant bit for the number of runs requested
+            assert len(full_weight_grads) % r == 0, 'Something went wrong with stored gradient shape.'
+            grads_per_run = len(full_weight_grads) // r
+            weight_grads = full_weight_grads[:grads_per_run * args.data_runs]
+            bias_grads = full_bias_grads[:grads_per_run * args.data_runs]
+
+            print(f" Saving only grads of run {args.data_runs} to: \n       {param_dir}")
+            with open(weight_path, 'wb') as f:
+                pickle.dump(weight_grads, f)
+            with open(bias_path, 'wb') as f:
+                pickle.dump(bias_grads, f)
+            return weight_path, bias_path, param_dir
 
     start_run = 0
     weight_grads = []
@@ -601,7 +635,7 @@ def main(base_args):
             gamma = None
         elif 'num_trajectories' in args_dict:
             mode = 'nongreedy'
-            gamma = args_dict['gamma']
+            gamma = args_dict.get('gamma', None)  # For old models
         else:
             raise KeyError()
 

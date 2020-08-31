@@ -151,6 +151,7 @@ class DataTransform:
                 kspace = transforms.complex_center_crop(kspace, (self.resolution, self.resolution))
                 target = transforms.complex_abs(transforms.ifft2(kspace))
             else:  # Crop in image space
+                # Same as original_setting, since in both cases we get kspace from gt image.
                 target = transforms.center_crop(target, (self.resolution, self.resolution))
                 kspace = transforms.rfft2(target)
 
