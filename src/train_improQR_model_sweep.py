@@ -197,7 +197,11 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                 avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
                 # REINFORCE with self-baselines
                 # batch x k
-                loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
+                if not args.no_baseline:
+                    loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
+                else:
+                    # No-baseline test
+                    loss = -1 * (action_logprobs * action_rewards) / actions.size(1)
                 # batch
                 loss = loss.sum(dim=1)
 
@@ -863,6 +867,9 @@ def create_arg_parser():
                         help='Whether to use original data setting used for knee experiments.')
     parser.add_argument('--low_res', type=str2bool, default=False,
                         help='Whether to use a low res full image, rather than a high res small image when cropping.')
+
+    parser.add_argument('--no_baseline', type=str2bool, default=False,
+                        help='Whether to not use a baseline (suggested by Bas).')
 
     return parser
 
