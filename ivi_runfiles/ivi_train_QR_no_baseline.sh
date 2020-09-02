@@ -13,7 +13,7 @@
 
 echo "Running..."
 
-source /home/tbbakke/anaconda3/bin/activate ml
+source /home/tbbakke/anaconda3/bin/activate fastmri
 
 nvidia-smi
 
