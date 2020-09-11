@@ -39,4 +39,4 @@ CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_model_
 --wandb True --do-train-ssim True --project mrimpro_gamma --original_setting True --low_res False --gamma 0.5
 
 #Copy output directory from scratch to home
-cp -r "$TMPDIR"/results $HOME/Projects/mrimpro/
+cp -r "$TMPDIR"/results $HOME/Projects/mrimpro/gamma_results_fix

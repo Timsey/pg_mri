@@ -46,4 +46,4 @@ CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_m
 #--wandb True --do-train-ssim True
 
 #Copy output directory from scratch to home
-cp -r "$TMPDIR"/results $HOME/Projects/mrimpro/results
+cp -r "$TMPDIR"/results $HOME/Projects/mrimpro/gamma_results_fix
