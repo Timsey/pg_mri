@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:2
 #SBATCH --ntasks=1
 #SBATCH --mem=20G
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=12
 #SBATCH --time 5-0:00:00
 #SBATCH --priority=TOP
 #SBATCH --job-name=nongreedy
