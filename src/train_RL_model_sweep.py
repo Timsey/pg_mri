@@ -504,7 +504,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                     loss = loss.mean() / args.batches_step
                                     loss.backward()
                             elif args.baseline_type == 'selfstep':
-                                gamma_vec = [args.gamma**(t-step) for t in range(step, args.acquisition_steps)]
+                                gamma_vec = [args.gamma**(t - step) for t in range(step, args.acquisition_steps)]
                                 gamma_ten = torch.tensor(gamma_vec).unsqueeze(-1).unsqueeze(-1).to(args.device)
                                 # step x batch x 1
                                 avg_rewards_tensor = torch.mean(reward_tensor, dim=2, keepdim=True)

@@ -11,6 +11,7 @@ from collections import defaultdict
 
 import torch
 
+from src.helpers.gumbel import compute_log_R
 from src.helpers.torch_metrics import ssim
 from src.helpers.data_loading import create_data_loaders
 from src.helpers.utils import load_json, save_json, str2bool, str2none
@@ -18,6 +19,14 @@ from src.impro_models.convpool_model import build_impro_convpool_model
 from src.recon_models.recon_model_utils import (get_new_zf, create_impro_model_input, load_recon_model,
                                                 acquire_new_zf_exp_batch, acquire_new_zf_batch)  # for greedy
 from src.impro_models.impro_model_utils import impro_model_forward_pass, build_optim
+
+
+def reinforce_unordered(cost, log_p, baseline=True):
+    with torch.no_grad():  # Don't compute gradients for advantage and ratio
+        log_R_s, log_R_ss = compute_log_R(log_p)
+        bl_vals = ((log_p[:, None, :] + log_R_ss).exp() * cost[:, None, :]).sum(-1)
+        adv_B = cost - bl_vals if baseline else cost
+    return ((log_p + log_R_s).exp() * adv_B).sum(-1)
 
 
 def create_data_range_dict(args, loader):
@@ -466,8 +475,8 @@ def greedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, gt_
         if args.estimator == 'wr':
             # batch x k
             actions = policy.sample((k,)).transpose(0, 1)  # TODO: DiCE estimator; differentiable sampling?
-        #         elif args.estimator == 'wor':
-        #             actions = torch.multinomial(probs, k, replacement=False)
+        elif args.estimator == 'wor':
+            actions = torch.multinomial(probs, k, replacement=False)
         else:
             raise ValueError(f'{args.estimator} is not a valid estimator.')
 
@@ -486,14 +495,19 @@ def greedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, gt_
             avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
             # REINFORCE with self-baselines
             # batch x k
-            loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
+            if not args.no_baseline:
+                loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
+            else:
+                # No-baseline test
+                loss = -1 * (action_logprobs * action_rewards) / actions.size(1)
             # batch
             loss = loss.sum(dim=1)
 
-        #         elif args.estimator == 'wor':
-        #             # Without replacement
-        #             # batch x 1
-        #             loss = reinforce_unordered(-1 * action_rewards, action_logprobs)
+        elif args.estimator == 'wor':
+            # Without replacement
+            # batch x 1
+            assert not args.no_baseline, 'Something went wrong with experiments here.'
+            loss = reinforce_unordered(-1 * action_rewards, action_logprobs)
         else:
             raise ValueError(f'{args.estimator} is not a valid estimator.')
 
@@ -599,13 +613,15 @@ def nongreedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, 
             # Do nongreedy loss calculation
             reward_tensor = torch.stack(reward_list)
             for step, logprobs in enumerate(logprob_list):
+                gamma_vec = [args.gamma ** (t - step) for t in range(step, args.acquisition_steps)]
+                gamma_ten = torch.tensor(gamma_vec).unsqueeze(-1).unsqueeze(-1).to(args.device)
                 # step x batch x 1
                 avg_rewards_tensor = torch.mean(reward_tensor, dim=2, keepdim=True)
                 # Get number of trajectories for correct average (see Wouter's paper)
                 num_traj = logprobs.size(-1)
                 # REINFORCE with self-baselines
                 # batch x k
-                ret = torch.sum(reward_tensor[step:, :, :] - avg_rewards_tensor[step:, :, :], dim=0)
+                ret = torch.sum(gamma_ten * (reward_tensor[step:, :, :] - avg_rewards_tensor[step:, :, :]), dim=0)
                 loss = -1 * (logprobs * ret) / (num_traj - 1)
 
                 # size: batch
@@ -632,10 +648,17 @@ def main(base_args):
         args_dict = load_json(base_args.base_impro_model_dir / run_dir / 'args.json')
         if 'num_target_rows' in args_dict:
             mode = 'greedy'
-            gamma = None
+            assert args_dict['scheduler_type'] == 'step', 'Multistep greedy not supported.'
+            if args_dict['no_baseline']:
+                label = 'nob'
+            else:
+                if args_dict['estimator'] == 'wor':
+                    label = 'wor'
+                elif args_dict['estimator'] == 'wr':
+                    label = 'wr'
         elif 'num_trajectories' in args_dict:
             mode = 'nongreedy'
-            gamma = args_dict.get('gamma', None)  # For old models
+            label = args_dict.get('gamma', None)  # For old models
         else:
             raise KeyError()
 
@@ -656,7 +679,7 @@ def main(base_args):
                 args.impro_model_checkpoint = base_args.base_impro_model_dir / run_dir / 'model.pt'
 
             pr_str = (f"Job {i*len(base_args.epochs)+j+1}/{len(base_args.impro_model_dir_list) * len(base_args.epochs)}"
-                      f"\n   mode: {mode:>9}, accel: {accel:>2}, steps: {steps:>2}, gamma: {gamma},\n"
+                      f"\n   mode: {mode:>9}, accel: {accel:>2}, steps: {steps:>2}, label: {label},\n"
                       f"   ckpt: {epoch:>2}, runs: {runs:>2}, srate: {sr:>3}, traj: {traj:>2}")
             print(pr_str)
 
@@ -672,7 +695,7 @@ def main(base_args):
             print(f"   Saving summary to {summary_path}")
             save_json(summary_path, summary_dict)
 
-            results_dict[run_dir][f'Epoch: {epoch}'] = {'job': (mode, traj, runs, sr, accel, steps, gamma),
+            results_dict[run_dir][f'Epoch: {epoch}'] = {'job': (mode, traj, runs, sr, accel, steps, label),
                                                         'snr': str(snr),
                                                         'snr_std': str(std)}
             print(f'SNR: {snr}, STD: {std}')
