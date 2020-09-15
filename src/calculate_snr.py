@@ -5,6 +5,7 @@ import copy
 import json
 import argparse
 import datetime
+import random
 import numpy as np
 from pprint import pprint
 from collections import defaultdict
@@ -158,23 +159,29 @@ def acquire_rows_in_batch_parallel(k, mk, mask, to_acquire):
     return m_exp, mk_exp
 
 
-def add_impro_args(args, impro_args):
-    args.accelerations = impro_args.accelerations
-    args.reciprocals_in_center = impro_args.reciprocals_in_center
-    args.center_fractions = impro_args.center_fractions
-    args.resolution = impro_args.resolution
-    args.in_chans = impro_args.in_chans
-    args.run_dir = impro_args.run_dir
-    args.recon_model_name = impro_args.recon_model_name
-    args.impro_model_name = impro_args.impro_model_name
-    args.acquisition_steps = impro_args.acquisition_steps
-
-    # For greedy model
-    if 'estimator' in impro_args.__dict__:
-        args.estimator = impro_args.estimator
-    if 'acq_strat' in impro_args.__dict__:
-        args.acq_strat = impro_args.acq_strat
-    return args
+# def add_impro_args(args, impro_args):
+#     args.accelerations = impro_args.accelerations
+#     args.reciprocals_in_center = impro_args.reciprocals_in_center
+#     args.center_fractions = impro_args.center_fractions
+#     args.resolution = impro_args.resolution
+#     args.in_chans = impro_args.in_chans
+#     args.run_dir = impro_args.run_dir
+#     args.recon_model_name = impro_args.recon_model_name
+#     args.impro_model_name = impro_args.impro_model_name
+#     args.acquisition_steps = impro_args.acquisition_steps
+#
+#     # For greedy models
+#     if 'estimator' in impro_args.__dict__:
+#         args.estimator = impro_args.estimator
+#     if 'no_baseline' in impro_args.__dict__:
+#         args.no_baseline = impro_args.no_baseline
+#     if 'acq_strat' in impro_args.__dict__:
+#         args.acq_strat = impro_args.acq_strat
+#
+#     # For non-greedy models
+#     if 'gamma' in impro_args.__dict__:
+#         args.gamma = impro_args.gamma
+#     return args
 
 
 def load_impro_model(checkpoint_file):
@@ -304,6 +311,20 @@ def compute_snr(args, weight_path, bias_path):
     return snr, std
 
 
+def add_base_args(args, impro_args):
+    # Batch size is set by SNR computation base args
+    impro_args.batch_size = args.batch_size
+    # Num trajectories is fixed by setting k in compute_gradients, so don't need to change this
+
+    # Fix paths to local machine
+    impro_args.impro_model_checkpoint = args.impro_model_checkpoint
+    impro_args.recon_model_checkpoint = args.recon_model_checkpoint
+    impro_args.data_path = args.data_path
+    impro_args.sample_rate = args.sample_rate
+
+    return args
+
+
 def compute_gradients(args, epoch):
     param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
                  f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
@@ -375,13 +396,14 @@ def compute_gradients(args, epoch):
             break
 
     model, impro_args, start_epoch, optimiser = load_impro_model(args.impro_model_checkpoint)
-    add_impro_args(args, impro_args)
+    # add_impro_args(args, impro_args)
+    add_base_args(args, impro_args)
 
-    recon_args, recon_model = load_recon_model(args)
+    recon_args, recon_model = load_recon_model(impro_args)
 
-    train_loader, dev_loader, test_loader, _ = create_data_loaders(args)
+    train_loader, dev_loader, test_loader, _ = create_data_loaders(impro_args)
     loader = train_loader
-    data_range_dict = create_data_range_dict(args, loader)
+    data_range_dict = create_data_range_dict(impro_args, loader)
 
     k = args.num_trajectories
     for r in range(start_run, args.data_runs):
@@ -410,7 +432,7 @@ def compute_gradients(args, epoch):
 
             tbs += mask.size(0)
 
-            impro_input = create_impro_model_input(args, recon_model, zf, mask)
+            impro_input = create_impro_model_input(impro_args, recon_model, zf, mask)
             unnorm_recon = impro_input[:, 0:1, :, :] * gt_std + gt_mean
             base_score = ssim(unnorm_recon, unnorm_gt, size_average=False,
                               data_range=data_range).mean(dim=(-1, -2))
@@ -419,14 +441,14 @@ def compute_gradients(args, epoch):
             if cbatch == 1:
                 optimiser.zero_grad()
 
+            # args and impro_args are different! Latter for specific model, former contains snr base params
             if args.mode == 'greedy':
-                batch_ssims = greedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, gt_mean, gt_std,
-                                                unnorm_gt,
-                                                data_range, impro_input, k, batch_ssims)
+                batch_ssims = greedy_trajectory(impro_args, model, recon_model, kspace, mask, masked_kspace, gt_mean,
+                                                gt_std, unnorm_gt, data_range, impro_input, k, batch_ssims)
             elif args.mode == 'nongreedy':
-                batch_ssims = nongreedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, gt_mean,
-                                                   gt_std, unnorm_gt,
-                                                   data_range, impro_input, k, base_score, batch_ssims)
+                batch_ssims = nongreedy_trajectory(impro_args, model, recon_model, kspace, mask, masked_kspace, gt_mean,
+                                                   gt_std, unnorm_gt, data_range, impro_input, k, base_score,
+                                                   batch_ssims)
             else:
                 raise ValueError()
 
@@ -662,8 +684,6 @@ def main(base_args):
         else:
             raise KeyError()
 
-        print(args_dict)
-
         accels = json.loads(args_dict['accelerations'])
         steps = json.loads(args_dict['acquisition_steps'])
         assert len(accels) == 1, "Various accelerations..."
@@ -723,9 +743,9 @@ def create_arg_parser():
 
     parser.add_argument('--sample-rate', type=float, default=0.04,
                         help='Fraction of total volumes to include')
-    parser.add_argument('--acquisition', type=str2none, default=None,
-                        help='Use only volumes acquired using the provided acquisition method. Options are: '
-                             'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
+    # parser.add_argument('--acquisition', type=str2none, default=None,
+    #                     help='Use only volumes acquired using the provided acquisition method. Options are: '
+    #                          'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
     parser.add_argument('--recon-model-checkpoint', type=pathlib.Path, default=None,
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
@@ -734,24 +754,24 @@ def create_arg_parser():
     parser.add_argument('--device', type=str, default='cuda',
                         help='Which device to train on. Set to "cuda" to use the GPU')
 
-    parser.add_argument('--accelerations', nargs='+', default=[8], type=int,
-                        help='Ratio of k-space columns to be sampled. If multiple values are '
-                             'provided, then one of those is chosen uniformly at random for '
-                             'each volume.')
-    parser.add_argument('--reciprocals-in-center', nargs='+', default=[1], type=float,
-                        help='Inverse fraction of rows (after subsampling) that should be in the center. E.g. if half '
-                             'of the sampled rows should be in the center, this should be set to 2. All combinations '
-                             'of acceleration and reciprocals-in-center will be used during training (every epoch a '
-                             'volume randomly gets assigned an acceleration and center fraction.')
-    parser.add_argument('--acquisition-steps', default=16, type=int, help='Acquisition steps to train for per image.')
+    # parser.add_argument('--accelerations', nargs='+', default=[8], type=int,
+    #                     help='Ratio of k-space columns to be sampled. If multiple values are '
+    #                          'provided, then one of those is chosen uniformly at random for '
+    #                          'each volume.')
+    # parser.add_argument('--reciprocals-in-center', nargs='+', default=[1], type=float,
+    #                     help='Inverse fraction of rows (after subsampling) that should be in the center. E.g. if half '
+    #                          'of the sampled rows should be in the center, this should be set to 2. All combinations '
+    #                          'of acceleration and reciprocals-in-center will be used during training (every epoch a '
+    #                          'volume randomly gets assigned an acceleration and center fraction.')
+    # parser.add_argument('--acquisition-steps', default=16, type=int, help='Acquisition steps to train for per image.')
     parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
 
     # Bools
-    parser.add_argument('--use-sensitivity', type=str2bool, default=False,
-                        help='Whether to use reconstruction model sensitivity as input to the improvement model.')
-    parser.add_argument('--center-volume', type=str2bool, default=True,
-                        help='If set, only the center slices of a volume will be included in the dataset. This '
-                             'removes the most noisy images from the data.')
+    # parser.add_argument('--use-sensitivity', type=str2bool, default=False,
+    #                     help='Whether to use reconstruction model sensitivity as input to the improvement model.')
+    # parser.add_argument('--center-volume', type=str2bool, default=True,
+    #                     help='If set, only the center slices of a volume will be included in the dataset. This '
+    #                          'removes the most noisy images from the data.')
     parser.add_argument('--data-parallel', type=str2bool, default=True,
                         help='If set, use multiple GPUs using data parallelism')
 
@@ -762,10 +782,10 @@ def create_arg_parser():
     parser.add_argument('--batches-step', type=int, default=1,
                         help='Number of batches to compute before doing an optimizer step.')
 
-    parser.add_argument('--original_setting', type=str2bool, default=True,
-                        help='Whether to use original data setting used for knee experiments.')
-    parser.add_argument('--low_res', type=str2bool, default=False,
-                        help='Whether to use a low res full image, rather than a high res small image when cropping.')
+    # parser.add_argument('--original_setting', type=str2bool, default=True,
+    #                     help='Whether to use original data setting used for knee experiments.')
+    # parser.add_argument('--low_res', type=str2bool, default=False,
+    #                     help='Whether to use a low res full image, rather than a high res small image when cropping.')
 
     parser.add_argument('--impro_model_dir_list', nargs='+', type=str, default=[None],
                         help='List of model dirs for modelts to calculate SNR for.')
@@ -795,6 +815,13 @@ if __name__ == "__main__":
     base_args = create_arg_parser().parse_args()
 
     # TODO: Remove state stuff from dataloaders?
+
+    if base_args.seed != 0:
+        random.seed(base_args.seed)
+        np.random.seed(base_args.seed)
+        torch.manual_seed(base_args.seed)
+        if base_args.device == 'cuda':
+            torch.cuda.manual_seed(base_args.seed)
 
     if base_args.use_data_state:
         from src.helpers.states import DEV_STATE, TRAIN_STATE, TEST_STATE

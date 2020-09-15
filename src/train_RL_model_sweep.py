@@ -1079,8 +1079,8 @@ def wrap_main(args):
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
-    if args.device == 'cuda':
-        torch.cuda.manual_seed(args.seed)
+        if args.device == 'cuda':
+            torch.cuda.manual_seed(args.seed)
 
     if args.use_data_state:
         args.train_state = TRAIN_STATE
