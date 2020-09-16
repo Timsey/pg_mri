@@ -671,7 +671,7 @@ def main(base_args):
         if 'num_target_rows' in args_dict:
             mode = 'greedy'
             assert args_dict['scheduler_type'] == 'step', 'Multistep greedy not supported.'
-            if args_dict['no_baseline']:
+            if str2bool(args_dict['no_baseline']):
                 label = 'nob'
             else:
                 if args_dict['estimator'] == 'wor':
