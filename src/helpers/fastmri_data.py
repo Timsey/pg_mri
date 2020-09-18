@@ -1,6 +1,7 @@
 import pathlib
 import random
 import h5py
+import numpy as np
 
 from torch.utils.data import Dataset
 
@@ -78,7 +79,21 @@ class SliceData(Dataset):
             if self.dataset == 'knee':
                 kspace = data['kspace'][slice]
             else:
-                kspace = None  # Could make this rfft(gt) to have original_setting work with brain data?
+                # Pad brain data up to 384 (max size) for consistency in crop later.
+                res = 384  # Maximum size in train val test.
+                bg = np.zeros((res, res))
+                w_pad = res - target.shape[-1]
+                w_pad_left = w_pad // 2 if w_pad % 2 == 0 else w_pad // 2 + 1
+                w_pad_right = w_pad // 2
+                h_pad = res - target.shape[-2]
+                h_pad_top = h_pad // 2 if h_pad % 2 == 0 else h_pad // 2 + 1
+                h_pad_bot = h_pad // 2
+
+                bg[h_pad_top:res - h_pad_bot, w_pad_left:res - w_pad_right] = target
+
+                target = bg
+                kspace = None  # Could make this np.fft.rfft2(gt) to have original_setting work with brain data?
+
             return self.transform(kspace, target, data.attrs, fname.name, slice)
 
 
@@ -151,7 +166,18 @@ class DataTransform:
                 kspace = transforms.complex_center_crop(kspace, (self.resolution, self.resolution))
                 target = transforms.complex_abs(transforms.ifft2(kspace))
             else:  # Crop in image space
-                # Same as original_setting, since in both cases we get kspace from gt image.
+                # Note: this is very similar to original_setting: pretty much equivalent.
+                # Thus, setting original_setting True, low_res False for Knee is same as setting original_setting False
+                # low_rest False for Brain!
+                #  For Brain we use the given fastMRI target as target. We then construct kspace from this by taking an
+                #  rfft.
+                #  For Knee we use the given fastMRI target as target. We also obtain kspace as an rfft from the target,
+                #  but here we slightly differ from the above: the target we obtain the kspace from, is one constructed
+                #  from the original kspace (by fix_kspace: ifft2, crop, abs, (rff2)). This is technically different,
+                #  but since the fastMRI singlecoil kspace is obtained as an fft2 from the fastMRI target, we are
+                #  essentially doing the same as directly taking an rfft on the target (experimentally the different
+                #  computation gives a maximum difference a factor 1/500 smaller than the target value: 2-3 orders of
+                #  magnitude, which should be negligible.).
                 target = transforms.center_crop(target, (self.resolution, self.resolution))
                 kspace = transforms.rfft2(target)
 

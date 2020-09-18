@@ -10,11 +10,10 @@ CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.calculate_snr -
 --batch-size 16 --sample-rate 0.5 --seed 0 --num-workers 4 --num-trajectories 16 --batches-step 1 \
 --style stoch --data_runs 3 --force_computation False --epochs 0 9 19 29 39 49 --base_impro_model_dir /home/timsey/Projects/mrimpro/gamma_results_fix/ \
 --impro_model_dir_list res128_al16_accel[8]_convpool_nounc_k8_2020-09-09_03:54:02_YWNLX \
-res128_al16_accel[8]_convpool_nounc_k8_2020-09-07_04:04:11_KNBNY res128_al16_accel[8]_convpool_nounc_k8_2020-09-05_22:02:10_XAQXC \
-res128_al16_accel[8]_convpool_nounc_k8_2020-09-05_21:16:23_SPDQS res128_al16_accel[8]_convpool_nounc_k8_2020-09-06_13:50:55_JAXUW \
-res128_al16_accel[8]_convpool_nounc_k8_2020-09-07_04:22:39_WHLIG res128_al16_accel[8]_convpool_nounc_k8_2020-09-06_00:35:18_LTKUH \
-res128_al16_accel[8]_convpool_nounc_k8_2020-09-02_16:39:26_PTMDD res128_al16_accel[8]_convpool_nounc_k8_2020-09-05_21:52:42_KOZOO \
-res128_al16_accel[8]_convpool_nounc_k8_2020-09-04_15:02:47_EPPYS res128_al16_accel[8]_convpool_nounc_k8_2020-09-07_03:07:37_GEEHR \
+res128_al16_accel[8]_convpool_nounc_k8_2020-09-05_22:02:10_XAQXC res128_al16_accel[8]_convpool_nounc_k8_2020-09-05_21:16:23_SPDQS \
+res128_al16_accel[8]_convpool_nounc_k8_2020-09-06_13:50:55_JAXUW res128_al16_accel[8]_convpool_nounc_k8_2020-09-07_04:22:39_WHLIG \
+res128_al16_accel[8]_convpool_nounc_k8_2020-09-06_00:35:18_LTKUH res128_al16_accel[8]_convpool_nounc_k8_2020-09-02_16:39:26_PTMDD \
+res128_al16_accel[8]_convpool_nounc_k8_2020-09-05_21:52:42_KOZOO res128_al16_accel[8]_convpool_nounc_k8_2020-09-04_15:02:47_EPPYS \
+res128_al16_accel[8]_convpool_nounc_k8_2020-09-07_03:07:37_GEEHR res128_al28_accel[32]_convpool_nounc_k8_2020-09-11_15:27:17_OPTVG \
 res128_al28_accel[32]_convpool_nounc_k8_2020-09-02_18:59:21_SVPCK res128_al28_accel[32]_convpool_nounc_k8_2020-09-02_16:43:49_MNIJB
-
 
