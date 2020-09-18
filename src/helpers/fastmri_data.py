@@ -81,7 +81,7 @@ class SliceData(Dataset):
             else:
                 # Pad brain data up to 384 (max size) for consistency in crop later.
                 res = 384  # Maximum size in train val test.
-                bg = np.zeros((res, res))
+                bg = np.zeros((res, res), dtype=np.float32)
                 w_pad = res - target.shape[-1]
                 w_pad_left = w_pad // 2 if w_pad % 2 == 0 else w_pad // 2 + 1
                 w_pad_right = w_pad // 2
