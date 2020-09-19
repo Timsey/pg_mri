@@ -512,6 +512,9 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                                 num_traj = logprobs.size(-1)
                                 # REINFORCE with self-baselines
                                 # batch x k
+                                # TODO: can also store transitions (s, a, r, s') pairs and recompute log probs when
+                                #  doing gradients? Takes less memory, but more compute: can this be efficiently
+                                #  batched?
                                 loss = -1 * (logprobs * torch.sum(
                                     gamma_ten * (reward_tensor[step:, :, :] - avg_rewards_tensor[step:, :, :]),
                                     dim=0)) / (num_traj - 1)
