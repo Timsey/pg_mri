@@ -14,6 +14,7 @@ res128_al16_accel[8]_convpool_nounc_k8_2020-09-05_22:02:10_XAQXC res128_al16_acc
 res128_al16_accel[8]_convpool_nounc_k8_2020-09-06_13:50:55_JAXUW res128_al16_accel[8]_convpool_nounc_k8_2020-09-07_04:22:39_WHLIG \
 res128_al16_accel[8]_convpool_nounc_k8_2020-09-06_00:35:18_LTKUH res128_al16_accel[8]_convpool_nounc_k8_2020-09-02_16:39:26_PTMDD \
 res128_al16_accel[8]_convpool_nounc_k8_2020-09-05_21:52:42_KOZOO res128_al16_accel[8]_convpool_nounc_k8_2020-09-04_15:02:47_EPPYS \
-res128_al16_accel[8]_convpool_nounc_k8_2020-09-07_03:07:37_GEEHR res128_al28_accel[32]_convpool_nounc_k8_2020-09-11_15:27:17_OPTVG \
+res128_al16_accel[8]_convpool_nounc_k8_2020-09-07_03:07:37_GEEHR res128_al28_accel[32]_convpool_nounc_k8_2020-09-15_12:07:25_SJDBU \
+res128_al28_accel[32]_convpool_nounc_k8_2020-09-11_06:24:31_OSHHZ res128_al28_accel[32]_convpool_nounc_k8_2020-09-11_15:27:17_OPTVG \
 res128_al28_accel[32]_convpool_nounc_k8_2020-09-02_18:59:21_SVPCK res128_al28_accel[32]_convpool_nounc_k8_2020-09-02_16:43:49_MNIJB
 
