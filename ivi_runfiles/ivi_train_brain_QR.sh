@@ -7,7 +7,7 @@
 #SBATCH --mem=10G
 #SBATCH --verbose
 #SBATCH --time 5-0:00:00
-#SBATCH --job-name=greedy
+#SBATCH --job-name=brain
 
 #SBATCH -D /home/tbbakke/mrimpro
 

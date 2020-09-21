@@ -1,6 +1,6 @@
 #!/bin/sh
 
-#SBATCH --job-name=greedy
+#SBATCH --job-name=brain
 #SBATCH --gres=gpu:4  # Hoeveel gpu heb je nodig?
 #SBATCH -C GTX980Ti|GTX1080Ti|TitanX  # Welke gpus heb je nodig?
 

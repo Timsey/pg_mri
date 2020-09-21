@@ -1,6 +1,6 @@
 #!/bin/sh
 
-#SBATCH --job-name=nogreedy
+#SBATCH --job-name=brain
 #SBATCH --gres=gpu:4  # Hoeveel gpu heb je nodig?
 #SBATCH -C GTX980Ti  # Welke gpus heb je nodig?
 

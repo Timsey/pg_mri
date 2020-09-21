@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=3
 #SBATCH --time 2-12:00:00
 #SBATCH --priority=TOP
-#SBATCH --job-name=greedy
+#SBATCH --job-name=brain
 #SBATCH --verbose
 
 echo "Starting..."

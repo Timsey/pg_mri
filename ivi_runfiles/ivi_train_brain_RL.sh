@@ -1,13 +1,13 @@
 #!/bin/sh
 
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=10
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=20
 #SBATCH --priority=TOP
-#SBATCH --mem=10G
+#SBATCH --mem=20G
 #SBATCH --verbose
 #SBATCH --time 7-0:00:00
-#SBATCH --job-name=gamma
+#SBATCH --job-name=brain
 
 #SBATCH -D /home/tbbakke/mrimpro
 
@@ -20,7 +20,7 @@ nvidia-smi
 
 # Do your stuff
 
-CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_model_sweep \
+CUDA_VISIBLE_DEVICES=0,1 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_model_sweep \
 --dataset fastmri --data-path /home/tbbakke/data/fastMRI/brain/ --exp-dir /home/tbbakke/mrimpro/brain_exp_results/ --resolution 256 \
 --recon-model-checkpoint /home/tbbakke/fastMRI-shi/models/unet/al_brain_nonorig_highres256_8to4in2/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 8 --batch-size 4 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 16 --report-interval 1000 \
