@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:4
 #SBATCH --ntasks=1
 #SBATCH --mem=40G
-#SBATCH --cpus-per-task=24
+#SBATCH --cpus-per-task=12
 #SBATCH --time 5-00:00:00
 #SBATCH --priority=TOP
 #SBATCH --job-name=brain
