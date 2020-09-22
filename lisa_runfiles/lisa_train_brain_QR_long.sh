@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --mem=10G
 #SBATCH --cpus-per-task=3
-#SBATCH --time 2-12:00:00
+#SBATCH --time 4-00:00:00
 #SBATCH --priority=TOP
 #SBATCH --job-name=brain
 #SBATCH --verbose
