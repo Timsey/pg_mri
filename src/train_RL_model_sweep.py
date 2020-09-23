@@ -160,6 +160,13 @@ def get_policy_probs(output, unacquired):
 
 
 def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer, baseline, data_range_dict):
+    # TODO: Can save a lot of memory at the cost of some extra computation by storing (s, a, r) triplets over all
+    #  trajectories without storing gradients. Then at the end of the episode do a reversed loop over these (might be
+    #  complex because of parallel trajectories) and for each (s, a, r) triplet recompute the log_prob(pi(A=a|S=s)) to
+    #  do updates. This requires running the policy forward twice as often, and also storing in-between reconstructions,
+    #  but we don't have to store gradients of whole trajectories this way, removing the RAM limit on horizon length,
+    #  number of parallel trajectories, and batch size (though note the latter can be fixed by running a number of
+    #  smaller batches and averaging gradients before updating, as we currently do with the batches_step argument).
     model.train()
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
