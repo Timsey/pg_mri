@@ -355,7 +355,7 @@ def train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer
                     else:
                         raise ValueError(f"{args.baseline.type} is not a valid baseline type.")
 
-                    # Divicde by batches_step to mimic taking mean over larger batch
+                    # Divide by batches_step to mimic taking mean over larger batch
                     loss = loss.mean() / args.batches_step
                     loss.backward()
 
