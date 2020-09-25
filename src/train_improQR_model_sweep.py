@@ -108,7 +108,7 @@ def get_rewards(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, r
     gt_exp = unnorm_gt.expand(-1, actions.size(1), -1, -1)
     # scores = batch x k (channels), base_score = batch x 1
     scores = ssim(unnorm_recons, gt_exp, size_average=False, data_range=data_range).mean(-1).mean(-1)
-    impros = (scores - base_score) * 1  # TODO: is this 'normalisation'?
+    impros = (scores - base_score) * args.reward_mult  # TODO: is this 'normalisation'?
     # target = batch x rows, batch_train_rows and impros = batch x k
     # target = torch.zeros(actions.size(0), res).to(args.device)
     target = output.detach().clone()
@@ -870,6 +870,9 @@ def create_arg_parser():
 
     parser.add_argument('--no_baseline', type=str2bool, default=False,
                         help='Whether to not use a baseline (suggested by Bas).')
+
+    parser.add_argument('--reward_mult', type=float, default=1,
+                        help='Value to multiply reward signal by (can act as normalisation).')
 
     return parser
 
