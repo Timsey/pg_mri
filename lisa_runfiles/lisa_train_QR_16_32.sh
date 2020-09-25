@@ -35,7 +35,7 @@ CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_improQR_m
 --of-which-four-pools 0 --num-chans 16 --batch-size 16 --impro-model-name convpool --fc-size 256 --accelerations 8 --acquisition-steps 16 --report-interval 1000 \
 --num-target-rows 8 --lr 5e-5 --sample-rate 0.5 --seed 0 --num-workers 4 --in-chans 1 --lr-gamma 0.5 --num-epochs 50 --num-pools 4 --pool-stride 1 \
 --estimator wr --acq_strat sample --acquisition None --center-volume True --scheduler-type multistep --lr-multi-step-size 10 20 30 40 --project mrimpro \
---wandb True --do-train-ssim True --num-test-trajectories 1 --original_setting True --low_res False --no_baseline False --reward_mult 100
+--wandb True --do-train-ssim True --num-test-trajectories 1 --original_setting True --low_res False --no_baseline False --reward_mult 1000
 
 #Copy output directory from scratch to home
 cp -r "$TMPDIR"/results $HOME/Projects/mrimpro/scale_results
