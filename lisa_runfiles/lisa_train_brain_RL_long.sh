@@ -29,7 +29,7 @@ mkdir "$TMPDIR"/results
 
 nvidia-smi
 
-CUDA_VISIBLE_DEVICES=0 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_model_sweep \
+CUDA_VISIBLE_DEVICES=0,1,2,3 HDF5_USE_FILE_LOCKING=FALSE python -m src.train_RL_model_sweep \
 --dataset fastmri --data-path "$TMPDIR"/data/brain/ --exp-dir "$TMPDIR"/results/ --resolution 256 \
 --recon-model-checkpoint /home/tbbakker/Projects/fastMRI-shi/models/unet/al_brain_nonorig_highres256_8to4in2/model.pt --recon-model-name nounc \
 --of-which-four-pools 0 --num-chans 8 --batch-size 4 --impro-model-name convpool --fc-size 256 --accelerations 32 --acquisition-steps 28 --report-interval 1000 \
