@@ -461,7 +461,6 @@ def run_oracle(args, recon_model, loader, data_range_dict):
                     select = int((step + 1) * equi - 1)
                     output[:, select] = 1.
                     output = output.to(args.device)
-                    print(select)
                 elif args.model_type == 'spectral':
                     # K-space similarity model proxy from Zhang et al. (2019)
                     # Instead of training an evaluator to determine kspace distance, we calculate ground truth
