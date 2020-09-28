@@ -1,4 +1,5 @@
 import json
+import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -58,14 +59,16 @@ def add_mask_params(args, recon_args):
     - If reciprocals_in_center is 2, then half of sampled rows will be in the center.
     """
 
+    # TODO: Remove this?
     # Use mask settings from reconstruction model
     if args.use_recon_mask_params and args.recon_model_name != 'zero_filled':
+        warnings.warn('Overwriting acceleration settings with those in recon model: '
+                      f'{recon_args.accelerations} {recon_args.center_fractions} {recon_args.mask_in_center_fracs}')
         args.accelerations = recon_args.accelerations
         args.center_fractions = recon_args.center_fractions
         args.reciprocals_in_center = recon_args.mask_in_center_fracs
-
-    # Use supplied mask settings
     else:
+        # Use supplied mask settings
         all_accels = []
         all_center_fracs = []
         all_reciprocals_in_center = []

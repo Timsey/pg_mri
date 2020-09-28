@@ -119,7 +119,7 @@ def get_spectral_dist(args, gt, recon, mask):
     # shape = batch x res
     shaped_mask = mask.view(gt.size(0), gt.size(3))
     # shape = batch x num_unacquired_rows
-    unacq_rows = [(row_mask == 0).nonzero().flatten() for row_mask in shaped_mask]
+    unacq_rows = [(row_mask == 0).nonzero(as_tuple=False).flatten() for row_mask in shaped_mask]
 
     # shape = batch x num_unacq_rows x res x res x 2
     masked_k_gt = torch.zeros(len(unacq_rows), len(unacq_rows[0]), gt.size(2), gt.size(3), 2).to(args.device)
@@ -209,7 +209,8 @@ def create_avg_oracle_loader(args, step, rows, split):
         dev_sample_rate = args.sample_rate * mult
         data = SliceData(
             root=dev_path,
-            transform=DataTransform(mask, args.resolution, args.challenge, use_seed=True),
+            transform=DataTransform(mask, args.resolution, args.challenge, use_seed=True,
+                                    original_setting=args.original_setting, low_res=args.low_res),
             sample_rate=dev_sample_rate,
             challenge=args.challenge,
             acquisition=args.acquisition,
@@ -221,7 +222,8 @@ def create_avg_oracle_loader(args, step, rows, split):
 
         data = SliceData(
             root=test_path,
-            transform=DataTransform(mask, args.resolution, args.challenge, use_seed=True),
+            transform=DataTransform(mask, args.resolution, args.challenge, use_seed=True,
+                                    original_setting=args.original_setting, low_res=args.low_res),
             sample_rate=args.sample_rate,
             challenge=args.challenge,
             acquisition=args.acquisition,
@@ -233,7 +235,8 @@ def create_avg_oracle_loader(args, step, rows, split):
 
         data = SliceData(
             root=train_path,
-            transform=DataTransform(mask, args.resolution, args.challenge, use_seed=True),
+            transform=DataTransform(mask, args.resolution, args.challenge, use_seed=False,
+                                    original_setting=args.original_setting, low_res=args.low_res),
             sample_rate=args.sample_rate,
             challenge=args.challenge,
             acquisition=args.acquisition,
@@ -351,7 +354,7 @@ def run_average_oracle(args, recon_model):
     return ssims, psnrs, time.perf_counter() - start
 
 
-def run_oracle(args, recon_model, dev_loader, data_range_dict):
+def run_oracle(args, recon_model, loader, data_range_dict):
     """
     Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
     """
@@ -362,8 +365,8 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
     start = time.perf_counter()
     tbs = 0
     with torch.no_grad():
-        for it, data in enumerate(dev_loader):
-            # logging.info('Batch {}/{}'.format(it + 1, len(dev_loader)))
+        for it, data in enumerate(loader):
+            # logging.info('Batch {}/{}'.format(it + 1, len(loader)))
             kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
             # TODO: Maybe normalisation unnecessary for SSIM target?
             # shape after unsqueeze = batch x channel x columns x rows x complex
@@ -410,53 +413,55 @@ def run_oracle(args, recon_model, dev_loader, data_range_dict):
                                             recon, data_range)
                     else:
                         # Don't recompute output
-                        output = output
                         # Set current largest value very low, so that next largest value is now largest
                         output[:, torch.argmax(output, dim=1)] = -1e-3
                 elif args.model_type == 'center_sym':  # Always get high score for most center unacquired row
-                    acquired = mask[0].squeeze().nonzero().flatten()
+                    acquired = mask.squeeze().nonzero(as_tuple=False)
                     output = torch.tensor([[(mask.size(-2) - 1) / 2 - abs(i - 0.1 - (mask.size(-2) - 1) / 2)
                                             for i in range(mask.size(-2))]
                                            for _ in range(mask.size(0))])
-                    output[:, acquired] = 0.
+                    output[acquired[:, 0], acquired[:, 1]] = 0.
                     output = output.to(args.device)
                 elif args.model_type == 'center_asym_left':
-                    acquired = mask[0].squeeze().nonzero().flatten()
+                    acquired = mask.squeeze().nonzero(as_tuple=False)
                     output = torch.tensor([[i if i <= mask.size(-2) // 2 else 0
                                             for i in range(mask.size(-2))]
                                            for _ in range(mask.size(0))])
-                    output[:, acquired] = 0.
+                    output[acquired[:, 0], acquired[:, 1]] = 0.
                     output = output.to(args.device)
                 elif args.model_type == 'center_asym_right':
-                    acquired = mask[0].squeeze().nonzero().flatten()
+                    acquired = mask.squeeze().nonzero(as_tuple=False)
                     output = torch.tensor([[mask.size(-2) - i if i >= mask.size(-2) // 2 else 0
                                             for i in range(mask.size(-2))]
                                            for _ in range(mask.size(0))])
-                    output[:, acquired] = 0.
+                    output[acquired[:, 0], acquired[:, 1]] = 0.
                     output = output.to(args.device)
                 elif args.model_type == 'random':  # Generate random scores (set acquired to 0. to perform filtering)
-                    acquired = mask[0].squeeze().nonzero().flatten()
+                    acquired = mask.squeeze().nonzero(as_tuple=False)
                     output = torch.randn((mask.size(0), mask.size(-2)))
-                    output[:, acquired] = 0.
+                    output[acquired[:, 0], acquired[:, 1]] = 0.
                     output = output.to(args.device)
                 elif args.model_type == 'equispace_twosided':
                     interval = int(args.resolution * (1 - 1 / args.accelerations[0]))
                     output = torch.zeros((mask.size(0), mask.size(-2)))
-                    equi = interval // args.acquisition_steps
-                    # Something like this
-                    if step <= args.acquisition_steps // 2:
-                        select = (step + 1) * equi - 1
+                    equi = interval / args.acquisition_steps
+                    # Something like this: only tested for even acceleration and acquisition_steps
+                    if step < args.acquisition_steps // 2:
+                        select = int((step + 1) * equi - 1)
                     else:
-                        select = args.resolution - (step - args.acquisition_steps // 2) * equi
+                        select = int(args.resolution - (step + 1 - args.acquisition_steps // 2) * equi)
+
                     output[:, select] = 1.
                     output = output.to(args.device)
                 elif args.model_type == 'equispace_onesided':
                     interval = int(args.resolution * (1 - 1 / args.accelerations[0]) / 2)
                     output = torch.zeros((mask.size(0), mask.size(-2)))
-                    equi = interval // args.acquisition_steps
-                    select = (step + 1) * equi - 1
+                    equi = interval / args.acquisition_steps
+                    # Something like this: only tested for even acceleration and acquisition_steps
+                    select = int((step + 1) * equi - 1)
                     output[:, select] = 1.
                     output = output.to(args.device)
+                    print(select)
                 elif args.model_type == 'spectral':
                     # K-space similarity model proxy from Zhang et al. (2019)
                     # Instead of training an evaluator to determine kspace distance, we calculate ground truth
@@ -578,16 +583,16 @@ def main(args):
     # For storing in wandb
     for epoch in range(args.num_epochs + 1):
         logging.info(f'Epoch = [{epoch:4d}/{args.num_epochs:4d}] ')
-        if args.model_type == 'random':
-            if args.data_split in ['dev', 'val']:
-                oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, dev_loader, data_range_dict)
-            elif args.data_split == 'test':
-                oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, test_loader, data_range_dict)
-            else:
-                oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, train_loader, data_range_dict)
-            ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_ssims)])
-            psnrs_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_psnrs)])
-            logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
+        # if args.model_type == 'random':
+        #     if args.data_split in ['dev', 'val']:
+        #         oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, dev_loader, data_range_dict)
+        #     elif args.data_split == 'test':
+        #         oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, test_loader, data_range_dict)
+        #     else:
+        #         oracle_ssims, oracle_psnrs, oracle_time = run_oracle(args, recon_model, train_loader, data_range_dict)
+        #     ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_ssims)])
+        #     psnrs_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_psnrs)])
+        #     logging.info(f'DevSSIMTime = {oracle_time:.2f}s')
         logging.info(f'  DevSSIM = [{ssims_str}]')
         logging.info(f'  DevPSNR = [{psnrs_str}]')
         if args.wandb:
@@ -605,11 +610,11 @@ def main(args):
 def create_arg_parser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
+    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators')
     parser.add_argument('--resolution', default=320, type=int, help='Resolution of images')
     parser.add_argument('--dataset', choices=['fastmri', 'cifar10'], required=True,
                         help='Dataset to use.')
-    parser.add_argument('--wandb',  action='store_true',
+    parser.add_argument('--wandb', type=str2bool, default=False,
                         help='Whether to use wandb logging for this run.')
 
     parser.add_argument('--model-type', choices=['center_sym', 'center_asym_left', 'center_asym_right',
@@ -627,7 +632,7 @@ def create_arg_parser():
                         help='Path to the dataset. Required for fastMRI training.')
     parser.add_argument('--sample-rate', type=float, default=1.,
                         help='Fraction of total volumes to include')
-    parser.add_argument('--acquisition', type=str2none, default='CORPD_FBK',
+    parser.add_argument('--acquisition', type=str2none, default=None,
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
                              'CORPD_FBK, CORPDFS_FBK (fat-suppressed), and not provided (both used).')
 
@@ -639,10 +644,10 @@ def create_arg_parser():
                         required=True, help='Reconstruction model name corresponding to model checkpoint.')
 
     parser.add_argument('--in-chans', default=1, type=int, help='Number of image input channels')
-    parser.add_argument('--center-volume', action='store_true',
+    parser.add_argument('--center-volume', type=str2bool, default=True,
                         help='If set, only the center slices of a volume will be included in the dataset. This '
                              'removes the most noisy images from the data.')
-    parser.add_argument('--use-recon-mask-params', action='store_true',
+    parser.add_argument('--use-recon-mask-params', type=str2bool, default=False,
                         help='Whether to use mask parameter settings (acceleration and center fraction) that the '
                         'reconstruction model was trained on. This will overwrite any other mask settings.')
 
@@ -663,14 +668,14 @@ def create_arg_parser():
     parser.add_argument('--batch-size', default=16, type=int, help='Mini batch size')
     parser.add_argument('--num-epochs', type=int, default=50, help='Number of training epochs')
 
-    parser.add_argument('--data-parallel', action='store_true',
+    parser.add_argument('--data-parallel', type=str2bool, default=True,
                         help='If set, use multiple GPUs using data parallelism')
     parser.add_argument('--num-workers', type=int, default=8, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Which device to train on. Set to "cuda" to use the GPU')
     parser.add_argument('--exp-dir', type=pathlib.Path, required=True,
-                        help='Directory where model and results should be saved. Will create a timestamped folder '
-                        'in provided directory each run')
+                        help='Directory where results should be saved. Will create a timestamped folder '
+                        'in provided directory each run.')
 
     parser.add_argument('--verbose', type=int, default=1,
                         help='Set verbosity level. Lowest=0, highest=4."')
@@ -681,6 +686,7 @@ def create_arg_parser():
 
     parser.add_argument('--project',  type=str, default='mrimpro',
                         help='Wandb project name to use.')
+
     parser.add_argument('--original_setting', type=str2bool, default=True,
                         help='Whether to use original data setting used for knee experiments.')
     parser.add_argument('--low_res', type=str2bool, default=False,
@@ -700,8 +706,8 @@ if __name__ == '__main__':
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
-    if args.device == 'cuda':
-        torch.cuda.manual_seed(args.seed)
+        if args.device == 'cuda':
+            torch.cuda.manual_seed(args.seed)
 
     if args.wandb:
         wandb.init(project=args.project, config=args)
