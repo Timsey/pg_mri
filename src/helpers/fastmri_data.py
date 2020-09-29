@@ -144,6 +144,7 @@ class DataTransform:
         Changed from original: now starting from GT RSS, which makes more sense if doing singlecoil.
         """
 
+        # TODO: Remove this original setting thing: in both cases just obtain k-space as rfft from target.
         if self.original_setting:
             # Uses kspace passed to this function as basis. Transforms to image space, then abs + crop, transform back
             # to obtain kspace used (self.fix_kspace) in rest of algorithm. Implementation is artefact of experiments
