@@ -35,11 +35,10 @@ from src.helpers.torch_metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters, str2bool, str2none)
 from src.helpers.data_loading import create_data_loaders
-from src.helpers.states import DEV_STATE, TRAIN_STATE, TEST_STATE
-from src.recon_models.recon_model_utils import (get_new_zf, acquire_new_zf_batch, create_impro_model_input,
-                                                load_recon_model)
-from src.impro_models.impro_model_utils import (build_impro_model, load_impro_model, build_optim, save_model,
-                                                impro_model_forward_pass)
+from src.reconstruction_model.reconstruction_model_utils import (get_new_zf, acquire_new_zf_batch, create_impro_model_input,
+                                                                 load_recon_model)
+from src.policy_model.policy_model_utils import (build_impro_model, load_impro_model, build_optim, save_model,
+                                                 impro_model_forward_pass, acquire_rows_in_batch_parallel)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,26 +46,6 @@ logger = logging.getLogger(__name__)
 targets = defaultdict(lambda: defaultdict(lambda: 0))
 target_counts = defaultdict(lambda: defaultdict(lambda: 0))
 outputs = defaultdict(lambda: defaultdict(list))
-
-
-def acquire_rows_in_batch_parallel(k, mk, mask, to_acquire):
-    # TODO: This is a version of acquire_new_zf_exp_batch returns mask instead of zf: integrate this nicely
-    if mask.size(1) == mk.size(1) == to_acquire.size(1):
-        # We are already in a trajectory: every row in to_acquire corresponds to an existing trajectory that
-        # we have sampled the next row for.
-        m_exp = mask
-        mk_exp = mk
-    else:
-        # We have to initialise trajectories: every row in to_acquire corresponds to the start of a trajectory.
-        m_exp = mask.repeat(1, to_acquire.size(1), 1, 1, 1)
-        mk_exp = mk.repeat(1, to_acquire.size(1), 1, 1, 1)
-    # Loop over slices in batch
-    for sl, rows in enumerate(to_acquire):
-        # Loop over indices to acquire
-        for index, row in enumerate(rows):
-            m_exp[sl, index, :, row.item(), :] = 1.
-            mk_exp[sl, index, :, row.item(), :] = k[sl, 0, :, row.item(), :]
-    return m_exp, mk_exp
 
 
 # def acquire_row(kspace, masked_kspace, next_rows, mask):
@@ -110,18 +89,7 @@ def create_data_range_dict(args, loader):
     return data_range_dict
 
 
-def compute_psnr(args, unnorm_recons, gt_exp, data_range):
-    # Have to reshape to batch . trajectories x res x res and then reshape back to batch x trajectories x res x res
-    # because of psnr implementation
-    psnr_recons = torch.clamp(unnorm_recons, 0., 10.).reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution,
-                                                              args.resolution).to('cpu')
-    psnr_gt = gt_exp.reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution, args.resolution).to('cpu')
-    # First duplicate data range over trajectories, then reshape: this to ensure alignment with recon and gt.
-    psnr_data_range = data_range.expand(-1, gt_exp.size(1), -1, -1)
-    psnr_data_range = psnr_data_range.reshape(gt_exp.size(0) * gt_exp.size(1), 1, 1, 1).to('cpu')
-    psnr_scores = psnr(psnr_recons, psnr_gt, reduction='none', data_range=psnr_data_range)
-    psnr_scores = psnr_scores.reshape(gt_exp.size(0), gt_exp.size(1))
-    return psnr_scores
+
 
 
 def get_rewards(args, res, mask, masked_kspace, recon_model, gt_mean, gt_std, unnorm_gt,

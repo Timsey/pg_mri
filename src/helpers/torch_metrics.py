@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from math import exp
 
+from piq import psnr
 
 def gaussian(window_size, sigma):
     gauss = torch.Tensor([exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
@@ -39,7 +40,7 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True, data_rang
         return ssim_map
 
 
-def ssim(img1, img2, window_size=11, size_average=True, data_range=None):
+def compute_ssim(img1, img2, window_size=11, size_average=True, data_range=None):
     (_, channel, _, _) = img1.size()
     window = create_window(window_size, channel)
 
@@ -48,3 +49,17 @@ def ssim(img1, img2, window_size=11, size_average=True, data_range=None):
     window = window.type_as(img1)
 
     return _ssim(img1, img2, window, window_size, channel, size_average, data_range)
+
+
+def compute_psnr(args, unnorm_recons, gt_exp, data_range):
+    # Have to reshape to batch . trajectories x res x res and then reshape back to batch x trajectories x res x res
+    # because of psnr implementation
+    psnr_recons = torch.clamp(unnorm_recons, 0., 10.).reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution,
+                                                              args.resolution).to('cpu')
+    psnr_gt = gt_exp.reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution, args.resolution).to('cpu')
+    # First duplicate data range over trajectories, then reshape: this to ensure alignment with recon and gt.
+    psnr_data_range = data_range.expand(-1, gt_exp.size(1), -1, -1)
+    psnr_data_range = psnr_data_range.reshape(gt_exp.size(0) * gt_exp.size(1), 1, 1, 1).to('cpu')
+    psnr_scores = psnr(psnr_recons, psnr_gt, reduction='none', data_range=psnr_data_range)
+    psnr_scores = psnr_scores.reshape(gt_exp.size(0), gt_exp.size(1))
+    return psnr_scores

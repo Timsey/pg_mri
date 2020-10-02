@@ -21,8 +21,8 @@ from src.helpers.torch_metrics import ssim
 from src.helpers.utils import (add_mask_params, save_json, check_args_consistency, str2bool, str2none)
 from src.helpers.data_loading import create_data_loaders
 from src.helpers.states import TRAIN_STATE, DEV_STATE, TEST_STATE
-from src.recon_models.recon_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
-                                                recon_model_forward_pass, load_recon_model)
+from src.reconstruction_model.reconstruction_model_utils import (acquire_new_zf_exp_batch, acquire_new_zf_batch,
+                                                                 recon_model_forward_pass, load_recon_model)
 from src.helpers.fastmri_data import DataTransform, SliceData
 from src.helpers import transforms
 

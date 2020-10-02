@@ -56,6 +56,7 @@
       <w>noqa</w>
       <w>notime</w>
       <w>nounc</w>
+      <w>optim</w>
       <w>outshoots</w>
       <w>preds</w>
       <w>pretrained</w>
@@ -77,6 +78,7 @@
       <w>ssim</w>
       <w>ssims</w>
       <w>statestep</w>
+      <w>stds</w>
       <w>subsampling</w>
       <w>tbakker</w>
       <w>tbbakker</w>
@@ -89,6 +91,7 @@
       <w>unitmask</w>
       <w>unnorm</w>
       <w>unnormalisation</w>
+      <w>unnormalise</w>
       <w>unsqueeze</w>
       <w>unsqueezed</w>
       <w>untrainable</w>

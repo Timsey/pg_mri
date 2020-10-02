@@ -16,10 +16,10 @@ from src.helpers.gumbel import compute_log_R
 from src.helpers.torch_metrics import ssim
 from src.helpers.data_loading import create_data_loaders
 from src.helpers.utils import load_json, save_json, str2bool, str2none
-from src.impro_models.convpool_model import build_impro_convpool_model
-from src.recon_models.recon_model_utils import (get_new_zf, create_impro_model_input, load_recon_model,
-                                                acquire_new_zf_exp_batch, acquire_new_zf_batch)  # for greedy
-from src.impro_models.impro_model_utils import impro_model_forward_pass, build_optim
+from src.policy_model.policy_model_def import build_impro_convpool_model
+from src.reconstruction_model.reconstruction_model_utils import (get_new_zf, create_impro_model_input, load_recon_model,
+                                                                 acquire_new_zf_exp_batch, acquire_new_zf_batch)  # for greedy
+from src.policy_model.policy_model_utils import impro_model_forward_pass, build_optim
 
 
 def reinforce_unordered(cost, log_p, baseline=True):

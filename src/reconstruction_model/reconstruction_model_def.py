@@ -33,7 +33,7 @@ class ConvBlock(nn.Module):
             nn.Conv2d(in_chans, out_chans, kernel_size=3, padding=1),
             nn.InstanceNorm2d(out_chans),  # Does not use batch statistics: unaffected by model.eval() or model.train()
             nn.ReLU(),
-            nn.Dropout2d(drop_prob),  # To do MC dropout, need model.train() at eval time.
+            nn.Dropout2d(drop_prob),
             nn.Conv2d(out_chans, out_chans, kernel_size=3, padding=1),
             nn.InstanceNorm2d(out_chans),
             nn.ReLU(),
@@ -84,13 +84,13 @@ class UnetModel(nn.Module):
 
         self.down_sample_layers = nn.ModuleList([ConvBlock(in_chans, chans, drop_prob)])
         ch = chans
-        for i in range(num_pool_layers - 1):
+        for _ in range(num_pool_layers - 1):
             self.down_sample_layers += [ConvBlock(ch, ch * 2, drop_prob)]
             ch *= 2
         self.conv = ConvBlock(ch, ch, drop_prob)
 
         self.up_sample_layers = nn.ModuleList()
-        for i in range(num_pool_layers - 1):
+        for _ in range(num_pool_layers - 1):
             self.up_sample_layers += [ConvBlock(ch * 2, ch // 2, drop_prob)]
             ch //= 2
         self.up_sample_layers += [ConvBlock(ch * 2, ch, drop_prob)]
@@ -126,18 +126,7 @@ class UnetModel(nn.Module):
         return self.conv2(output)
 
 
-def build_kengal_model(recon_args, args):
-    kengal_model = UnetModel(
-        in_chans=1,
-        out_chans=2,
-        chans=recon_args.num_chans,
-        num_pool_layers=recon_args.num_pools,
-        drop_prob=recon_args.drop_prob
-    ).to(args.device)
-    return kengal_model
-
-
-def build_nounc_model(recon_args, args):
+def build_reconstruction_model(recon_args, args):
     kengal_model = UnetModel(
         in_chans=1,
         out_chans=1,
