@@ -737,6 +737,7 @@ def train_and_eval(args, recon_args, recon_model):
         resumed = True
         new_run_dir = args.impro_model_checkpoint.parent
         data_path = args.data_path
+        # TODO: Recon model checkpoint can be obtained from impro_args instead
         recon_model_checkpoint = args.recon_model_checkpoint
 
         model, args, start_epoch, optimiser = load_impro_model(pathlib.Path(args.impro_model_checkpoint), optim=True)
@@ -852,7 +853,7 @@ def train_and_eval(args, recon_args, recon_model):
                                                                False, dev_data_range_dict)
 
         logging.info(
-            f'Epoch = [{epoch:3d}/{args.num_epochs:3d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
+            f'Epoch = [{epoch+1:3d}/{args.num_epochs:3d}] TrainLoss = {train_loss:.3g} DevLoss = {dev_loss:.3g}'
         )
 
         if args.do_train_ssim:

@@ -401,7 +401,7 @@ def compute_gradients(args, epoch):
 
     recon_args, recon_model = load_recon_model(impro_args)
 
-    train_loader, dev_loader, test_loader, _ = create_data_loaders(impro_args)
+    train_loader, _, _, _ = create_data_loaders(impro_args)
     loader = train_loader
     data_range_dict = create_data_range_dict(impro_args, loader)
 
@@ -503,6 +503,7 @@ def greedy_trajectory(args, model, recon_model, kspace, mask, masked_kspace, gt_
             raise ValueError(f'{args.estimator} is not a valid estimator.')
 
         # REINFORCE-like with baselines
+        # TODO: Use the simpler get_reward_nongreedy function here?
         target = get_rewards_greedy(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model,
                                     impro_input, actions, output, data_range)
 
