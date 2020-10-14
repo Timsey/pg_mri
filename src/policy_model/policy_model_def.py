@@ -117,9 +117,9 @@ class PolicyModel(nn.Module):
 def build_policy_model(args):
     model = PolicyModel(
         resolution=args.resolution,
-        in_chans=args.in_chans,
+        in_chans=1,
         chans=args.num_chans,
-        num_pool_layers=args.num_pools,
+        num_pool_layers=args.num_layers,
         drop_prob=args.drop_prob,
         fc_size=args.fc_size,
     ).to(args.device)

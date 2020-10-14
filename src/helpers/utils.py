@@ -1,5 +1,5 @@
 import json
-import warnings
+import torch
 
 
 def str2bool(v):
@@ -68,3 +68,8 @@ def add_mask_params(args):
     args.center_fractions = all_center_fracs
     args.reciprocals_in_center = all_reciprocals_in_center
     return args
+
+
+def build_optim(args, params):
+    optimiser = torch.optim.Adam(params, args.lr, weight_decay=args.weight_decay)
+    return optimiser

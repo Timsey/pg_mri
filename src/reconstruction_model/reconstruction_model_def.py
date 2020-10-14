@@ -126,12 +126,12 @@ class UnetModel(nn.Module):
         return self.conv2(output)
 
 
-def build_reconstruction_model(recon_args, args):
+def build_reconstruction_model(args):
     kengal_model = UnetModel(
         in_chans=1,
         out_chans=1,
-        chans=recon_args.num_chans,
-        num_pool_layers=recon_args.num_pools,
-        drop_prob=recon_args.drop_prob
+        chans=args.num_chans,
+        num_pool_layers=args.num_pools,
+        drop_prob=args.drop_prob
     ).to(args.device)
     return kengal_model

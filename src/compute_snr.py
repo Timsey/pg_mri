@@ -16,10 +16,10 @@ from src.helpers.gumbel import compute_log_R
 from src.helpers.torch_metrics import ssim
 from src.helpers.data_loading import create_data_loaders
 from src.helpers.utils import load_json, save_json, str2bool, str2none
-from src.policy_model.policy_model_def import build_impro_convpool_model
-from src.reconstruction_model.reconstruction_model_utils import (get_new_zf, create_impro_model_input, load_recon_model,
-                                                                 acquire_new_zf_exp_batch, acquire_new_zf_batch)  # for greedy
-from src.policy_model.policy_model_utils import impro_model_forward_pass, build_optim
+from src.impro_models.convpool_model import build_impro_convpool_model
+from src.recon_models.recon_model_utils import (get_new_zf, create_impro_model_input, load_recon_model,
+                                                acquire_new_zf_exp_batch, acquire_new_zf_batch)  # for greedy
+from src.impro_models.impro_model_utils import impro_model_forward_pass, build_optim
 
 
 def reinforce_unordered(cost, log_p, baseline=True):
@@ -311,9 +311,24 @@ def compute_snr(args, weight_path, bias_path):
     return snr, std
 
 
+# def add_base_args(args, impro_args):
+#     # Batch size is set by SNR computation base args
+#     impro_args.batch_size = args.batch_size
+#     # Num trajectories is fixed by setting k in compute_gradients, so don't need to change this
+#
+#     # Fix paths to local machine
+#     impro_args.impro_model_checkpoint = args.impro_model_checkpoint
+#     impro_args.recon_model_checkpoint = args.recon_model_checkpoint
+#     impro_args.data_path = args.data_path
+#     impro_args.sample_rate = args.sample_rate
+#
+#     return args
+
+
 def add_base_args(args, impro_args):
-    # Batch size is set by SNR computation base args
+    # Batch size has to be set to match those in args.
     impro_args.batch_size = args.batch_size
+    impro_args.batches_step = 1
     # Num trajectories is fixed by setting k in compute_gradients, so don't need to change this
 
     # Fix paths to local machine
@@ -321,8 +336,6 @@ def add_base_args(args, impro_args):
     impro_args.recon_model_checkpoint = args.recon_model_checkpoint
     impro_args.data_path = args.data_path
     impro_args.sample_rate = args.sample_rate
-
-    return args
 
 
 def compute_gradients(args, epoch):
@@ -380,8 +393,10 @@ def compute_gradients(args, epoch):
 
     # Check if some part of the gradients already computed
     for r in range(args.data_runs, 0, -1):
+        # tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+        #                  f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
         tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
-                         f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
+                         f'_runs{r}_batch{args.batch_size}')
         tmp_weight_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}_it{args.iters}.pkl'
         tmp_bias_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}_it{args.iters}.pkl'
         # If part already computed, skip this part of the computation by setting start_run to the highest
@@ -396,7 +411,6 @@ def compute_gradients(args, epoch):
             break
 
     model, impro_args, start_epoch, optimiser = load_impro_model(args.impro_model_checkpoint)
-    # add_impro_args(args, impro_args)
     add_base_args(args, impro_args)
 
     recon_args, recon_model = load_recon_model(impro_args)

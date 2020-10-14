@@ -8,18 +8,17 @@ import pathlib
 import wandb
 from random import choice
 from string import ascii_uppercase
-from collections import defaultdict
 
 import torch
 import numpy as np
 from tensorboardX import SummaryWriter
 
 from src.helpers.torch_metrics import compute_ssim, compute_psnr
-from src.helpers.utils import (add_mask_params, save_json, count_parameters,
+from src.helpers.utils import (add_mask_params, save_json, build_optim, count_parameters,
                                count_trainable_parameters, count_untrainable_parameters, str2bool, str2none)
 from src.helpers.data_loading import create_data_loader
 from src.reconstruction_model.reconstruction_model_utils import load_recon_model
-from src.policy_model.policy_model_utils import (build_policy_model, load_policy_model, build_optim, save_policy_model,
+from src.policy_model.policy_model_utils import (build_policy_model, load_policy_model, save_policy_model,
                                                  compute_scores, create_data_range_dict,
                                                  compute_next_step_reconstruction, get_policy_probs)
 
@@ -34,7 +33,9 @@ def train_epoch(args, epoch, recon_model, model, loader, optimiser, writer, data
     start_epoch = start_iter = time.perf_counter()
     global_step = epoch * len(loader)
 
-    for it, data in enumerate(loader):
+    cbatch = 0  # Counter for spreading single backprop batch over multiple data loader batches
+    for it, data in enumerate(loader):  # Loop over data points
+        cbatch += 1
         kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
         # shape after unsqueeze = batch x channel x columns x rows x complex
         kspace = kspace.unsqueeze(1).to(args.device)
@@ -45,59 +46,115 @@ def train_epoch(args, epoch, recon_model, model, loader, optimiser, writer, data
         gt = gt.unsqueeze(1).to(args.device)
         gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
         gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-        unnorm_gt = gt * gt_std + gt_mean
-        data_range = torch.stack([data_range_dict[vol] for vol in fname])
+        unnorm_gt = gt * gt_std + gt_mean  # Unnormalise ground truth image for SSIM calculations
+        data_range = torch.stack([data_range_dict[vol] for vol in fname])  # For SSIM calculations
 
-        # Base reconstruction model forward pass
-        recon = recon_model(zf)
+        # Base reconstruction model forward pass: input to policy model
+        recons = recon_model(zf)
 
-        optimiser.zero_grad()
-        for step in range(args.acquisition_steps):
+        if cbatch == 1:  # Only after backprop is performed
+            optimiser.zero_grad()
+        action_list = []
+        logprob_list = []
+        reward_list = []
+        for step in range(args.acquisition_steps):  # Loop over acquisition steps
             # Base score from which to calculate acquisition rewards
-            base_score = compute_ssim(recon, unnorm_gt, size_average=False,
-                                      data_range=data_range).mean(-1).mean(-1)  # keep channel dim = 1
-            # Get policy and probabilities. Sample actions from policy.
-            policy, probs = get_policy_probs(model, recon, mask)
-            actions = policy.sample((args.num_trajectories,)).transpose(0, 1)
+            base_score = compute_scores(args, recons, gt_mean, gt_std, unnorm_gt, data_range, comp_psnr=False)
+            # Get policy and probabilities.
+            policy, probs = get_policy_probs(model, recons, mask)
+            # Sample actions from the policy. For greedy (or at step = 0) we sample num_trajectories actions from the
+            # current policy. For non-greedy with step > 0, we sample a single action for every of the num_trajectories
+            # policies.
+            # probs shape = batch x num_traj x res
+            # actions shape = batch x num_traj
+            # action_logprobs shape = batch x num_traj
+            if step == 0 or args.model_type == 'greedy':  # probs has shape batch x 1 x res
+                actions = torch.multinomial(probs.squeeze(1), args.num_trajectories, replacement=True)
+                actions = actions.unsqueeze(1)  # batch x num_traj -> batch x 1 x num_traj
+                # probs shape = batch x 1 x res
+                action_logprobs = torch.log(torch.gather(probs, -1, actions)).squeeze(1)
+                actions = actions.squeeze(1)
+            else:  # Non-greedy model and step > 0: this means probs has shape batch x num_traj x res
+                actions = policy.sample()
+                actions = actions.unsqueeze(-1)  # batch x num_traj -> batch x num_traj x 1
+                # probs shape = batch x num_traj x res
+                action_logprobs = torch.log(torch.gather(probs, -1, actions)).squeeze(-1)
+                actions = actions.squeeze(1)
 
             # Obtain rewards in parallel by taking actions in parallel
-            # TODO: Check that this doesn't mutate the mask and masked_kspace
             mask, masked_kspace, zf, recons = compute_next_step_reconstruction(recon_model, kspace,
                                                                                masked_kspace, mask, actions)
             ssim_scores = compute_scores(args, recons, gt_mean, gt_std, unnorm_gt, data_range, comp_psnr=False)
             # batch x num_trajectories
             action_rewards = ssim_scores - base_score
-            # batch x num_trajectories
-            action_logprobs = torch.log(torch.gather(probs, 1, actions))
             # batch x 1
-            avg_reward = torch.mean(action_rewards, dim=1, keepdim=True)
-            # batch x k
-            if not args.no_baseline:
-                # Local baseline
-                loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(1) - 1)
-            else:
-                # No-baseline
-                loss = -1 * (action_logprobs * action_rewards) / actions.size(1)
-            # batch
-            loss = loss.sum(dim=1)
+            avg_reward = torch.mean(action_rewards, dim=-1, keepdim=True)
+            # Store for non-greedy model (we need the full return before we can do a backprop step)
+            action_list.append(actions)
+            logprob_list.append(action_logprobs)
+            reward_list.append(action_rewards)
 
-            loss = loss.mean()
-            loss.backward()
+            if args.model_type == 'greedy':
+                # batch x k
+                if args.no_baseline:
+                    # No-baseline
+                    loss = -1 * (action_logprobs * action_rewards) / actions.size(-1)
+                else:
+                    # Local baseline
+                    loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(-1) - 1)
+                # batch
+                loss = loss.sum(dim=1)
+                # Average over batch
+                # Divide by batches_step to mimic taking mean over larger batch
+                loss = loss.mean() / args.batches_step  # For consistency: we generally set batches_step to 1 for greedy
+                loss.backward()
 
-            epoch_loss[step] += loss.item() / len(loader) * mask.size(0) / args.batch_size
-            report_loss[step] += loss.item() / args.report_interval * mask.size(0) / args.batch_size
+                # For greedy: initialise next step by randomly picking one of the measurements for every slice
+                # For non-greedy we will continue with the parallel sampled rows stored in masked_kspace, and
+                # with mask, zf, and recons.
+                idx = random.randint(0, mask.shape[1] - 1)
+                mask = mask[:, idx:idx + 1, :, :, :]
+                masked_kspace = masked_kspace[:, idx:idx + 1, :, :, :]
+                recons = recons[:, idx:idx + 1, :, :]
+
+            elif step != args.acquisition_steps - 1:  # Non-greedy but don't have full return yet.
+                loss = torch.zeros(1)  # For logging
+            else:  # Final step, can compute non-greedy return
+                reward_tensor = torch.stack(reward_list)
+                for step, logprobs in enumerate(logprob_list):
+                    # Discount factor
+                    gamma_vec = [args.gamma ** (t - step) for t in range(step, args.acquisition_steps)]
+                    gamma_ten = torch.tensor(gamma_vec).unsqueeze(-1).unsqueeze(-1).to(args.device)
+                    # step x batch x 1
+                    avg_rewards_tensor = torch.mean(reward_tensor, dim=2, keepdim=True)
+                    # Get number of trajectories for correct average
+                    num_traj = logprobs.size(-1)
+                    # REINFORCE with self-baselines
+                    # batch x k
+                    # TODO: can also store transitions (s, a, r, s') pairs and recompute log probs when
+                    #  doing gradients? Takes less memory, but more compute: can this be efficiently
+                    #  batched?
+                    loss = -1 * (logprobs * torch.sum(
+                        gamma_ten * (reward_tensor[step:, :, :] - avg_rewards_tensor[step:, :, :]),
+                        dim=0)) / (num_traj - 1)
+                    # batch
+                    loss = loss.sum(dim=1)
+                    # Average over batch
+                    # Divide by batches_step to mimic taking mean over larger batch
+                    loss = loss.mean() / args.batches_step
+                    loss.backward()  # Store gradients
+
+            # Loss logging
+            epoch_loss[step] += loss.item() / len(loader) * gt.size(0) / args.batch_size
+            report_loss[step] += loss.item() / args.report_interval * gt.size(0) / args.batch_size
             writer.add_scalar('TrainLoss_step{}'.format(step), loss.item(), global_step + it)
 
-            if step == len(args.acquisition_steps) - 1:
-                continue  # Don't need to actually compute next step reconstruction for the last acquisition
+        # Backprop if we've reached the prerequisite number of dataloader batches
+        if cbatch == args.batches_step:
+            optimiser.step()
+            cbatch = 0
 
-            # Acquire next row by sampling
-            next_rows = policy.sample()
-            mask, masked_kspace, zf, impro_input = compute_next_step_reconstruction(recon_model, kspace, masked_kspace,
-                                                                                    mask, next_rows)
-
-        optimiser.step()
-
+        # Logging: note that loss values mean little, as the Policy Gradient loss is not a true loss.
         if it % args.report_interval == 0:
             if it == 0:
                 loss_str = ", ".join(["{}: {:.2f}".format(i + 1, args.report_interval * l * 1e3)
@@ -110,7 +167,6 @@ def train_epoch(args, epoch, recon_model, model, loader, optimiser, writer, data
                 f'Time = {time.perf_counter() - start_iter:.2f}s, '
                 f'Avg Loss per step x1e3 = [{loss_str}] ',
             )
-
             report_loss = [0. for _ in range(args.acquisition_steps)]
 
         start_iter = time.perf_counter()
@@ -146,41 +202,42 @@ def evaluate(args, epoch, recon_model, model, loader, writer, partition, data_ra
             tbs += mask.size(0)
 
             # Base reconstruction model forward pass
-            recon = recon_model(zf)
-            unnorm_recon = recon[:, 0:1, :, :] * gt_std + gt_mean
-            init_ssim_val = compute_ssim(unnorm_recon, unnorm_gt, size_average=False,
+            recons = recon_model(zf)
+            unnorm_recons = recons[:, :, :, :] * gt_std + gt_mean
+            init_ssim_val = compute_ssim(unnorm_recons, unnorm_gt, size_average=False,
                                          data_range=data_range).mean(dim=(-1, -2)).sum()
-            init_psnr_val = compute_psnr(args, unnorm_recon, unnorm_gt, data_range)
+            init_psnr_val = compute_psnr(args, unnorm_recons, unnorm_gt, data_range).sum()
 
-            base_mask = mask
-            base_masked_kspace = masked_kspace
-            base_impro_input = impro_input
-            for _ in range(args.num_test_trajectories):
-                mask = base_mask.clone()
-                masked_kspace = base_masked_kspace.clone()
-                impro_input = base_impro_input.clone()
+            batch_ssims = [init_ssim_val.item()]
+            batch_psnrs = [init_psnr_val.item()]
 
-                batch_ssims = [init_ssim_val.item()]
-                batch_psnrs = [init_psnr_val.item()]
+            for step in range(args.acquisition_steps):
+                policy, probs = get_policy_probs(model, recons, mask)
+                if step == 0:
+                    actions = torch.multinomial(probs.squeeze(1), args.num_test_trajectories, replacement=True)
+                else:
+                    actions = policy.sample()
+                # Samples trajectories in parallel
+                # For evaluation we can treat greedy and non-greedy the same: in both cases we just simulate
+                # num_test_trajectories acquisition trajectories in parallel for each slice in the batch, and store
+                # the average SSIM score every time step.
+                mask, masked_kspace, zf, recons = compute_next_step_reconstruction(recon_model, kspace,
+                                                                                   masked_kspace, mask, actions)
+                ssim_scores, psnr_scores = compute_scores(args, recons, gt_mean, gt_std, unnorm_gt, data_range,
+                                                          comp_psnr=True)
+                assert len(ssim_scores.shape) == 2
+                ssim_scores = ssim_scores.mean(-1).sum()
+                psnr_scores = psnr_scores.mean(-1).sum()
+                # eventually shape = al_steps
+                batch_ssims.append(ssim_scores.item())
+                batch_psnrs.append(psnr_scores.item())
 
-                for step in range(args.acquisition_steps):
-                    policy, probs = get_policy_probs(model, recon, mask)
-                    next_rows = policy.sample()
-                    mask, masked_kspace, zf, recons = compute_next_step_reconstruction(recon_model, kspace,
-                                                                                       masked_kspace, mask, next_rows)
-                    ssim_scores, psnr_scores = compute_scores(args, recons, gt_mean, gt_std, unnorm_gt, data_range,
-                                                              comp_psnr=True)
-                    assert len(ssim_scores.size()) == 2
-                    # eventually shape = al_steps
-                    batch_ssims.append(ssim_scores.sum().item())
-                    batch_psnrs.append(psnr_scores.sum().item())
+            # shape of al_steps
+            ssims += np.array(batch_ssims)
+            psnrs += np.array(batch_psnrs)
 
-                # shape of al_steps
-                ssims += np.array(batch_ssims)
-                psnrs += np.array(batch_psnrs)
-
-    ssims /= (tbs * args.num_test_trajectories)
-    psnrs /= (tbs * args.num_test_trajectories)
+    ssims /= tbs
+    psnrs /= tbs
 
     # Logging
     if partition in ['Val', 'Train']:
@@ -196,8 +253,10 @@ def evaluate(args, epoch, recon_model, model, loader, writer, partition, data_ra
         # Only computed once, so loop over all epochs for wandb logging
         if args.wandb:
             for epoch in range(args.num_epochs):
-                wandb.log({'val_ssims': {str(key): val for key, val in enumerate(ssims)}}, step=epoch + 1)
-                wandb.log({'val_psnrs': {str(key): val for key, val in enumerate(psnrs)}}, step=epoch + 1)
+                wandb.log({f'{partition.lower()}_ssims': {str(key): val for key, val in enumerate(ssims)}},
+                          step=epoch + 1)
+                wandb.log({f'{partition.lower()}_psnrs': {str(key): val for key, val in enumerate(psnrs)}},
+                          step=epoch + 1)
 
     else:
         raise ValueError(f"'partition' should be in ['Train', 'Val', 'Test'], not: {partition}")
@@ -210,13 +269,13 @@ def train_and_eval(args, recon_args, recon_model):
     if args.resume:
         # Check that this works
         resumed = True
-        new_run_dir = args.impro_model_checkpoint.parent
+        new_run_dir = args.policy_model_checkpoint.parent
         data_path = args.data_path
         # In case models have been moved to a different machine, make sure the path to the recon model is the
         # path provided.
         recon_model_checkpoint = args.recon_model_checkpoint
 
-        model, args, start_epoch, optimiser = load_policy_model(pathlib.Path(args.impro_model_checkpoint), optim=True)
+        model, args, start_epoch, optimiser = load_policy_model(pathlib.Path(args.policy_model_checkpoint), optim=True)
 
         args.old_run_dir = args.run_dir
         args.old_recon_model_checkpoint = args.recon_model_checkpoint
@@ -231,17 +290,16 @@ def train_and_eval(args, recon_args, recon_model):
         # Improvement model to train
         model = build_policy_model(args)
         # Add mask parameters for training
-        args = add_mask_params(args, recon_args)
+        args = add_mask_params(args)
         if args.data_parallel:
             model = torch.nn.DataParallel(model)
         optimiser = build_optim(args, model.parameters())
         start_epoch = 0
         # Create directory to store results in
-        savestr = 'res{}_al{}_accel{}_{}_{}_k{}_{}_{}'.format(args.resolution, args.acquisition_steps,
-                                                              args.accelerations, args.impro_model_name,
-                                                              args.recon_model_name, args.num_target_rows,
-                                                              datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"),
-                                                              ''.join(choice(ascii_uppercase) for _ in range(5)))
+        savestr = '{}_res{}_al{}_accel{}_k{}_{}_{}'.format(args.dataset, args.resolution, args.acquisition_steps,
+                                                           args.accelerations, args.num_trajectories,
+                                                           datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S"),
+                                                           ''.join(choice(ascii_uppercase) for _ in range(5)))
         args.run_dir = args.exp_dir / savestr
         args.run_dir.mkdir(parents=True, exist_ok=False)
 
@@ -253,7 +311,6 @@ def train_and_eval(args, recon_args, recon_model):
         wandb.watch(model, log='all')
 
     # Logging
-    logging.info(args)
     logging.info(recon_model)
     logging.info(model)
     # Save arguments for bookkeeping
@@ -289,8 +346,8 @@ def train_and_eval(args, recon_args, recon_model):
 
     if not args.resume:
         if args.do_train_ssim:
-            do_and_log_evaluation(recon_model, model, train_loader, train_data_range_dict, writer, -1, 'Train')
-        do_and_log_evaluation(recon_model, model, dev_loader, dev_data_range_dict, writer, -1, 'Val')
+            do_and_log_evaluation(args, -1, recon_model, model, train_loader, writer, 'Train', train_data_range_dict)
+        do_and_log_evaluation(args, -1, recon_model, model, dev_loader, writer, 'Val', dev_data_range_dict)
 
     for epoch in range(start_epoch, args.num_epochs):
         train_loss, train_time = train_epoch(args, epoch, recon_model, model, train_loader, optimiser, writer,
@@ -300,15 +357,15 @@ def train_and_eval(args, recon_args, recon_model):
         )
 
         if args.do_train_ssim:
-            do_and_log_evaluation(recon_model, model, train_loader, train_data_range_dict, writer, epoch, 'Train')
-        do_and_log_evaluation(recon_model, model, dev_loader, dev_data_range_dict, writer, epoch, 'Val')
+            do_and_log_evaluation(args, epoch, recon_model, model, train_loader, writer, 'Train', train_data_range_dict)
+        do_and_log_evaluation(args, epoch, recon_model, model, dev_loader, writer, 'Val', dev_data_range_dict)
 
         scheduler.step()
-        save_policy_model(args, args.run_dir, epoch, model, optimiser, args.milestones)
+        save_policy_model(args, args.run_dir, epoch, model, optimiser)
     writer.close()
 
 
-def do_and_log_evaluation(recon_model, model, loader, data_range_dict, writer, epoch, partition):
+def do_and_log_evaluation(args, epoch, recon_model, model, loader, writer, partition, data_range_dict):
     ssims, psnrs, score_time = evaluate(args, epoch, recon_model, model, loader, writer, partition, data_range_dict)
     ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(ssims)])
     psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(psnrs)])
@@ -318,26 +375,22 @@ def do_and_log_evaluation(recon_model, model, loader, data_range_dict, writer, e
 
 
 def test(args, recon_model):
-    model, policy_args = load_policy_model(pathlib.Path(args.impro_model_checkpoint))
+    model, policy_args = load_policy_model(pathlib.Path(args.policy_model_checkpoint))
 
-    policy_args.train_state = args.train_state
-    policy_args.dev_state = args.dev_state
-    policy_args.test_state = args.test_state
-
-    policy_args.wandb = args.wandb
+    # Overwrite number of trajectories to test on
     policy_args.num_test_trajectories = args.num_test_trajectories
+    if args.data_path is not None:  # Overwrite data path if provided
+        policy_args.data_path = args.data_path
 
+    # Logging of policy model
+    logging.info(args)
+    logging.info(recon_model)
+    logging.info(model)
     if args.wandb:
         wandb.config.update(args)
         wandb.watch(model, log='all')
-
-        # Initialise summary writer
+    # Initialise summary writer
     writer = SummaryWriter(log_dir=policy_args.run_dir / 'summary')
-
-    # Logging
-    logging.info(policy_args)
-    logging.info(recon_model)
-    logging.info(model)
 
     # Parameter counting
     logging.info('Reconstruction model parameters: total {}, of which {} trainable and {} untrainable'.format(
@@ -348,14 +401,15 @@ def test(args, recon_model):
 
     # Create data loader
     test_loader = create_data_loader(policy_args, 'test', shuffle=False)
-    test_data_range_dict = create_data_range_dict(args, test_loader)
+    test_data_range_dict = create_data_range_dict(policy_args, test_loader)
 
-    do_and_log_evaluation(recon_model, model, test_loader, test_data_range_dict, writer, -1, 'Test')
+    do_and_log_evaluation(policy_args, -1, recon_model, model, test_loader, writer, 'Test', test_data_range_dict)
 
     writer.close()
 
 
 def main(args):
+    logging.info(args)
     # Reconstruction model
     recon_args, recon_model = load_recon_model(args)
 
@@ -375,7 +429,7 @@ def create_arg_parser():
                         help="Path to the dataset. Make sure to set this consistently with the 'dataset' "
                              "argument above.")
 
-    parser.add_argument('--sample_rate', type=float, default=0.04,
+    parser.add_argument('--sample_rate', type=float, default=0.5,
                         help='Fraction of total volumes to include')
     parser.add_argument('--acquisition', type=str2none, default=None,
                         help='Use only volumes acquired using the provided acquisition method. Options are: '
@@ -384,12 +438,12 @@ def create_arg_parser():
                         help='Path to a pretrained reconstruction model.')
     parser.add_argument('--num_trajectories', type=int, default=8, help='Number of actions to sample every acquisition '
                         'step during training.')
-    parser.add_argument('--report_interval', type=int, default=100, help='Period of loss reporting')
-    parser.add_argument('--num_workers', type=int, default=8, help='Number of workers to use for data loading')
+    parser.add_argument('--report_interval', type=int, default=1000, help='Period of loss reporting')
+    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Which device to train on. Set to "cuda" to use the GPU')
 
-    parser.add_argument('--exp_dir', type=pathlib.Path, required=True,
+    parser.add_argument('--exp_dir', type=pathlib.Path, default=None,
                         help='Directory where model and results should be saved. Will create a timestamped folder '
                         'in provided directory each run')
     parser.add_argument('--accelerations', nargs='+', default=[8], type=int,
@@ -406,7 +460,8 @@ def create_arg_parser():
                         'this too high will cause size mismatch errors, due to even-odd errors in calculation for '
                         'layer size post-flattening (due to max pooling).')
     parser.add_argument('--drop_prob', type=float, default=0, help='Dropout probability')
-    parser.add_argument('--batch_size', default=16, type=int, help='Mini batch size')
+    parser.add_argument('--batch_size', default=16, type=int, help='Mini batch size for training')
+    parser.add_argument('--val_batch_size', default=64, type=int, help='Mini batch size for validation')
     parser.add_argument('--weight_decay', type=float, default=0,
                         help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
                         'are not updated every step (since we select certain targets only); FIX THIS.')
@@ -416,32 +471,30 @@ def create_arg_parser():
                              'removes the most noisy images from the data.')
     parser.add_argument('--data_parallel', type=str2bool, default=True,
                         help='If set, use multiple GPUs using data parallelism')
-    parser.add_argument('--do_train_ssim', type=str2bool, default=True,
+    parser.add_argument('--do_train_ssim', type=str2bool, default=False,
                         help='Whether to compute SSIM values on training data.')
 
-    # Sweep params
+    parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
     parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators. If set to 0, no seed '
                         'will be used.')
 
     parser.add_argument('--num_chans', type=int, default=16, help='Number of ConvNet channels in first layer.')
     parser.add_argument('--fc_size', default=256, type=int, help='Size (width) of fully connected layer(s).')
 
-    parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-
-    parser.add_argument('--lr_step_size', type=int, default=40,
-                        help='Period of learning rate decay')
+    parser.add_argument('--lr', type=float, default=5e-5, help='Learning rate')
     parser.add_argument('--lr_gamma', type=float, default=0.1,
                         help='Multiplicative factor of learning rate decay')
     parser.add_argument('--scheduler_type', type=str, choices=['step', 'multistep'], default='step',
                         help='Number of training epochs')
-    parser.add_argument('--lr_multi_step_size', nargs='+', type=int, default=40,
+    parser.add_argument('--lr_step_size', type=int, default=40,
+                        help='Period of learning rate decay')
+    parser.add_argument('--lr_multi_step_size', nargs='+', type=int, default=[10, 20, 30, 40],
                         help='Epoch at which to decay the lr if using multistep scheduler.')
 
     parser.add_argument('--do_train', type=str2bool, default=True,
                         help='Whether to do training or testing.')
-    parser.add_argument('--impro_model_checkpoint', type=pathlib.Path, required=True,
-                        help='Path to a pretrained impro model.')
+    parser.add_argument('--policy_model_checkpoint', type=pathlib.Path, default=None,
+                        help='Path to a pretrained policy model if do_train is False (testing).')
 
     parser.add_argument('--milestones', nargs='+', type=int, default=[0, 9, 19, 29, 39, 49],
                         help='Epochs at which to save model separately.')
@@ -458,14 +511,22 @@ def create_arg_parser():
 
     parser.add_argument('--test_multi',  type=str2bool, default=False,
                         help='Test multiple models in one script')
-    parser.add_argument('--impro_model_list', nargs='+', type=str, default=[None],
-                        help='List of model paths for multi-testing.')
+    parser.add_argument('--policy_model_list', nargs='+', type=str, default=[None],
+                        help='List of policy model paths for multi-testing.')
 
-    parser.add_argument('--project',  type=str, default='mrimpro',
+    parser.add_argument('--project',  type=str2none, default=None,
                         help='Wandb project name to use.')
 
+    parser.add_argument('--model_type', type=str, default='greedy', choices=['greedy', 'nongreedy'],
+                        help="'greedy' to train greedy model, 'nongreedy' to train non-greedy model")
+    parser.add_argument('--batches_step', type=int, default=1,
+                        help='Number of dataloader batches to compute before doing an optimiser step. This is mostly '
+                             'used to train non-greedy models with larger batch sizes.')
+
     parser.add_argument('--no_baseline', type=str2bool, default=False,
-                        help='Whether to not use a reward baseline at all.')
+                        help="Whether to not use a reward baseline at all. Currently only implemented for 'greedy'.")
+    parser.add_argument('--gamma', type=float, default=1,
+                        help='Discount factor in RL. Currently only used for non-greedy training.')
 
     return parser
 
@@ -486,7 +547,6 @@ def wrap_main(args):
         if args.resume:
             assert args.run_id is not None, "run_id must be given if resuming with wandb."
             wandb.init(project=args.project, resume=args.run_id)
-            # wandb.restore(run_path=f"mrimpro/{args.run_id}")
         elif args.test_multi:
             wandb.init(project=args.project, reinit=True)
         else:
@@ -508,11 +568,12 @@ if __name__ == '__main__':
 
     if base_args.test_multi:
         assert not base_args.do_train, "Doing multiple model testing: do_train must be False."
-        assert base_args.impro_model_list is not None, "Doing multiple model testing: must have list of impro models."
+        assert (base_args.policy_model_list[0] is not None,
+                "Doing multiple model testing: must have list of policy models.")
 
-        for model in base_args.impro_model_list:
+        for model in base_args.policy_model_list:
             args = copy.deepcopy(base_args)
-            args.impro_model_checkpoint = model
+            args.policy_model_checkpoint = model
             wrap_main(args)
             wandb.join()
 

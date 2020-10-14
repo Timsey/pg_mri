@@ -230,7 +230,7 @@ class MaskFunc:
 
 
 def create_fastmri_dataset(args, partition):
-    # TODO: Paths not hardcoded?
+    # TODO: Fix these paths!
     if partition == 'train':
         path = args.data_path / f'singlecoil_train_al'
         use_seed = False
@@ -254,16 +254,27 @@ def create_fastmri_dataset(args, partition):
         center_volume=args.center_volume
     )
 
+    print(f'{partition.capitalize()} slices: {len(dataset)}')
+
     return dataset
 
 
-def create_data_loader(args, partition, shuffle=False):
+def create_data_loader(args, partition, shuffle=False, display=False):
     # TODO: set shuffle to True for train
     dataset = create_fastmri_dataset(args, partition)
 
+    if partition.lower() == 'train':
+        batch_size = args.batch_size
+    elif partition.lower() in ['val', 'test']:
+        batch_size = args.val_batch_size
+        if display:
+            dataset = [dataset[i] for i in range(0, len(dataset), len(dataset) // 16)]
+    else:
+        raise ValueError(f"'partition' should be in ('train', 'val', 'test'), not {partition}")
+
     loader = DataLoader(
         dataset=dataset,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         shuffle=shuffle,
         num_workers=args.num_workers,
         pin_memory=True,

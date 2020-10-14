@@ -251,7 +251,11 @@ def ifftshift(x, dim=None):
 
 
 def rfft2(data):
-    assert len(data.shape) == 4
+    # (H x W) or (C x H x W) or (B x C x H x W)
+    assert data.shape[-1] == data.shape[-2]
+    assert (len(data.shape) == 2 or
+            (len(data.shape) == 3 and data.shape[0] == 1) or
+            (len(data.shape) == 4 and data.shape[1] == 1))
     data = ifftshift(data, dim=(-2, -1))
     data = torch.rfft(data, 2, normalized=True, onesided=False)
     # Now complex valued with dim -1 as [real, imaginary] dimension
