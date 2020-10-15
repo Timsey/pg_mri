@@ -104,7 +104,7 @@ CUDA_VISIBLE_DEVICES=0 python -m src.run_baseline_models --data_path <path_to_da
 ```
 CUDA_VISIBLE_DEVICES=0 python -m src.run_baseline_models --data_path <path_to_data> --recon_model_checkpoint <path_to_reconstruction_model.pt> --exp_dir <path_to_output> --project <wandb_project_name> --wandb True --accelerations 32 --acquisition_steps 28 --model_type random
 ```
-### Brain
+#### Brain
 ##### Base horizon random (1GPU)
 ```
 CUDA_VISIBLE_DEVICES=0 python -m src.run_baseline_models --dataset brain --resolution 256 --data_path <path_to_data> --recon_model_checkpoint <path_to_reconstruction_model.pt> --exp_dir <path_to_output> --project <wandb_project_name> --wandb True --sample_rate 0.2 --center_volume False --model_type random

@@ -1,7 +1,7 @@
 import torch
+import random
 
 from .policy_model_def import build_policy_model
-
 from src.helpers import transforms
 from src.helpers.utils import build_optim
 from src.helpers.torch_metrics import compute_ssim, compute_psnr
@@ -161,3 +161,94 @@ def create_data_range_dict(args, loader):
         data_range_dict[vol] = torch.stack(gts).max().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1).to(args.device)
     del gt_vol_dict
     return data_range_dict
+
+
+def compute_backprop_trajectory(args, kspace, masked_kspace, mask, unnorm_gt, recons, gt_mean, gt_std,
+                                data_range, model, recon_model, step, action_list, logprob_list, reward_list):
+    # Base score from which to calculate acquisition rewards
+    base_score = compute_scores(args, recons, gt_mean, gt_std, unnorm_gt, data_range, comp_psnr=False)
+    # Get policy and probabilities.
+    policy, probs = get_policy_probs(model, recons, mask)
+    # Sample actions from the policy. For greedy (or at step = 0) we sample num_trajectories actions from the
+    # current policy. For non-greedy with step > 0, we sample a single action for every of the num_trajectories
+    # policies.
+    # probs shape = batch x num_traj x res
+    # actions shape = batch x num_traj
+    # action_logprobs shape = batch x num_traj
+    if step == 0 or args.model_type == 'greedy':  # probs has shape batch x 1 x res
+        actions = torch.multinomial(probs.squeeze(1), args.num_trajectories, replacement=True)
+        actions = actions.unsqueeze(1)  # batch x num_traj -> batch x 1 x num_traj
+        # probs shape = batch x 1 x res
+        action_logprobs = torch.log(torch.gather(probs, -1, actions)).squeeze(1)
+        actions = actions.squeeze(1)
+    else:  # Non-greedy model and step > 0: this means probs has shape batch x num_traj x res
+        actions = policy.sample()
+        actions = actions.unsqueeze(-1)  # batch x num_traj -> batch x num_traj x 1
+        # probs shape = batch x num_traj x res
+        action_logprobs = torch.log(torch.gather(probs, -1, actions)).squeeze(-1)
+        actions = actions.squeeze(1)
+
+    # Obtain rewards in parallel by taking actions in parallel
+    mask, masked_kspace, zf, recons = compute_next_step_reconstruction(recon_model, kspace,
+                                                                       masked_kspace, mask, actions)
+    ssim_scores = compute_scores(args, recons, gt_mean, gt_std, unnorm_gt, data_range, comp_psnr=False)
+    # batch x num_trajectories
+    action_rewards = ssim_scores - base_score
+    # batch x 1
+    avg_reward = torch.mean(action_rewards, dim=-1, keepdim=True)
+    # Store for non-greedy model (we need the full return before we can do a backprop step)
+    action_list.append(actions)
+    logprob_list.append(action_logprobs)
+    reward_list.append(action_rewards)
+
+    if args.model_type == 'greedy':
+        # batch x k
+        if args.no_baseline:
+            # No-baseline
+            loss = -1 * (action_logprobs * action_rewards) / actions.size(-1)
+        else:
+            # Local baseline
+            loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(-1) - 1)
+        # batch
+        loss = loss.sum(dim=1)
+        # Average over batch
+        # Divide by batches_step to mimic taking mean over larger batch
+        loss = loss.mean() / args.batches_step  # For consistency: we generally set batches_step to 1 for greedy
+        loss.backward()
+
+        # For greedy: initialise next step by randomly picking one of the measurements for every slice
+        # For non-greedy we will continue with the parallel sampled rows stored in masked_kspace, and
+        # with mask, zf, and recons.
+        idx = random.randint(0, mask.shape[1] - 1)
+        mask = mask[:, idx:idx + 1, :, :, :]
+        masked_kspace = masked_kspace[:, idx:idx + 1, :, :, :]
+        recons = recons[:, idx:idx + 1, :, :]
+
+    elif step != args.acquisition_steps - 1:  # Non-greedy but don't have full return yet.
+        loss = torch.zeros(1)  # For logging
+    else:  # Final step, can compute non-greedy return
+        reward_tensor = torch.stack(reward_list)
+        for step, logprobs in enumerate(logprob_list):
+            # Discount factor
+            gamma_vec = [args.gamma ** (t - step) for t in range(step, args.acquisition_steps)]
+            gamma_ten = torch.tensor(gamma_vec).unsqueeze(-1).unsqueeze(-1).to(args.device)
+            # step x batch x 1
+            avg_rewards_tensor = torch.mean(reward_tensor, dim=2, keepdim=True)
+            # Get number of trajectories for correct average
+            num_traj = logprobs.size(-1)
+            # REINFORCE with self-baselines
+            # batch x k
+            # TODO: can also store transitions (s, a, r, s') pairs and recompute log probs when
+            #  doing gradients? Takes less memory, but more compute: can this be efficiently
+            #  batched?
+            loss = -1 * (logprobs * torch.sum(
+                gamma_ten * (reward_tensor[step:, :, :] - avg_rewards_tensor[step:, :, :]),
+                dim=0)) / (num_traj - 1)
+            # batch
+            loss = loss.sum(dim=1)
+            # Average over batch
+            # Divide by batches_step to mimic taking mean over larger batch
+            loss = loss.mean() / args.batches_step
+            loss.backward()  # Store gradients
+
+    return loss, mask, masked_kspace, recons

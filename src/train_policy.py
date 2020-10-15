@@ -19,7 +19,7 @@ from src.helpers.utils import (add_mask_params, save_json, build_optim, count_pa
 from src.helpers.data_loading import create_data_loader
 from src.reconstruction_model.reconstruction_model_utils import load_recon_model
 from src.policy_model.policy_model_utils import (build_policy_model, load_policy_model, save_policy_model,
-                                                 compute_scores, create_data_range_dict,
+                                                 compute_scores, create_data_range_dict, compute_backprop_trajectory,
                                                  compute_next_step_reconstruction, get_policy_probs)
 
 logging.basicConfig(level=logging.INFO)
@@ -54,96 +54,16 @@ def train_epoch(args, epoch, recon_model, model, loader, optimiser, writer, data
 
         if cbatch == 1:  # Only after backprop is performed
             optimiser.zero_grad()
+
         action_list = []
         logprob_list = []
         reward_list = []
         for step in range(args.acquisition_steps):  # Loop over acquisition steps
-            # Base score from which to calculate acquisition rewards
-            base_score = compute_scores(args, recons, gt_mean, gt_std, unnorm_gt, data_range, comp_psnr=False)
-            # Get policy and probabilities.
-            policy, probs = get_policy_probs(model, recons, mask)
-            # Sample actions from the policy. For greedy (or at step = 0) we sample num_trajectories actions from the
-            # current policy. For non-greedy with step > 0, we sample a single action for every of the num_trajectories
-            # policies.
-            # probs shape = batch x num_traj x res
-            # actions shape = batch x num_traj
-            # action_logprobs shape = batch x num_traj
-            if step == 0 or args.model_type == 'greedy':  # probs has shape batch x 1 x res
-                actions = torch.multinomial(probs.squeeze(1), args.num_trajectories, replacement=True)
-                actions = actions.unsqueeze(1)  # batch x num_traj -> batch x 1 x num_traj
-                # probs shape = batch x 1 x res
-                action_logprobs = torch.log(torch.gather(probs, -1, actions)).squeeze(1)
-                actions = actions.squeeze(1)
-            else:  # Non-greedy model and step > 0: this means probs has shape batch x num_traj x res
-                actions = policy.sample()
-                actions = actions.unsqueeze(-1)  # batch x num_traj -> batch x num_traj x 1
-                # probs shape = batch x num_traj x res
-                action_logprobs = torch.log(torch.gather(probs, -1, actions)).squeeze(-1)
-                actions = actions.squeeze(1)
-
-            # Obtain rewards in parallel by taking actions in parallel
-            mask, masked_kspace, zf, recons = compute_next_step_reconstruction(recon_model, kspace,
-                                                                               masked_kspace, mask, actions)
-            ssim_scores = compute_scores(args, recons, gt_mean, gt_std, unnorm_gt, data_range, comp_psnr=False)
-            # batch x num_trajectories
-            action_rewards = ssim_scores - base_score
-            # batch x 1
-            avg_reward = torch.mean(action_rewards, dim=-1, keepdim=True)
-            # Store for non-greedy model (we need the full return before we can do a backprop step)
-            action_list.append(actions)
-            logprob_list.append(action_logprobs)
-            reward_list.append(action_rewards)
-
-            if args.model_type == 'greedy':
-                # batch x k
-                if args.no_baseline:
-                    # No-baseline
-                    loss = -1 * (action_logprobs * action_rewards) / actions.size(-1)
-                else:
-                    # Local baseline
-                    loss = -1 * (action_logprobs * (action_rewards - avg_reward)) / (actions.size(-1) - 1)
-                # batch
-                loss = loss.sum(dim=1)
-                # Average over batch
-                # Divide by batches_step to mimic taking mean over larger batch
-                loss = loss.mean() / args.batches_step  # For consistency: we generally set batches_step to 1 for greedy
-                loss.backward()
-
-                # For greedy: initialise next step by randomly picking one of the measurements for every slice
-                # For non-greedy we will continue with the parallel sampled rows stored in masked_kspace, and
-                # with mask, zf, and recons.
-                idx = random.randint(0, mask.shape[1] - 1)
-                mask = mask[:, idx:idx + 1, :, :, :]
-                masked_kspace = masked_kspace[:, idx:idx + 1, :, :, :]
-                recons = recons[:, idx:idx + 1, :, :]
-
-            elif step != args.acquisition_steps - 1:  # Non-greedy but don't have full return yet.
-                loss = torch.zeros(1)  # For logging
-            else:  # Final step, can compute non-greedy return
-                reward_tensor = torch.stack(reward_list)
-                for step, logprobs in enumerate(logprob_list):
-                    # Discount factor
-                    gamma_vec = [args.gamma ** (t - step) for t in range(step, args.acquisition_steps)]
-                    gamma_ten = torch.tensor(gamma_vec).unsqueeze(-1).unsqueeze(-1).to(args.device)
-                    # step x batch x 1
-                    avg_rewards_tensor = torch.mean(reward_tensor, dim=2, keepdim=True)
-                    # Get number of trajectories for correct average
-                    num_traj = logprobs.size(-1)
-                    # REINFORCE with self-baselines
-                    # batch x k
-                    # TODO: can also store transitions (s, a, r, s') pairs and recompute log probs when
-                    #  doing gradients? Takes less memory, but more compute: can this be efficiently
-                    #  batched?
-                    loss = -1 * (logprobs * torch.sum(
-                        gamma_ten * (reward_tensor[step:, :, :] - avg_rewards_tensor[step:, :, :]),
-                        dim=0)) / (num_traj - 1)
-                    # batch
-                    loss = loss.sum(dim=1)
-                    # Average over batch
-                    # Divide by batches_step to mimic taking mean over larger batch
-                    loss = loss.mean() / args.batches_step
-                    loss.backward()  # Store gradients
-
+            # TODO: check that this works!
+            loss, mask, masked_kspace, recons = compute_backprop_trajectory(args, kspace, masked_kspace, mask,
+                                                                            unnorm_gt, recons, gt_mean, gt_std,
+                                                                            data_range, model, recon_model, step,
+                                                                            action_list, logprob_list, reward_list)
             # Loss logging
             epoch_loss[step] += loss.item() / len(loader) * gt.size(0) / args.batch_size
             report_loss[step] += loss.item() / args.report_interval * gt.size(0) / args.batch_size
@@ -428,7 +348,6 @@ def create_arg_parser():
     parser.add_argument('--data_path', type=pathlib.Path, required=True,
                         help="Path to the dataset. Make sure to set this consistently with the 'dataset' "
                              "argument above.")
-
     parser.add_argument('--sample_rate', type=float, default=0.5,
                         help='Fraction of total volumes to include')
     parser.add_argument('--acquisition', type=str2none, default=None,
@@ -442,7 +361,6 @@ def create_arg_parser():
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers to use for data loading')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Which device to train on. Set to "cuda" to use the GPU')
-
     parser.add_argument('--exp_dir', type=pathlib.Path, default=None,
                         help='Directory where model and results should be saved. Will create a timestamped folder '
                         'in provided directory each run')
@@ -465,7 +383,6 @@ def create_arg_parser():
     parser.add_argument('--weight_decay', type=float, default=0,
                         help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
                         'are not updated every step (since we select certain targets only); FIX THIS.')
-
     parser.add_argument('--center_volume', type=str2bool, default=True,
                         help='If set, only the center slices of a volume will be included in the dataset. This '
                              'removes the most noisy images from the data.')
@@ -473,14 +390,11 @@ def create_arg_parser():
                         help='If set, use multiple GPUs using data parallelism')
     parser.add_argument('--do_train_ssim', type=str2bool, default=False,
                         help='Whether to compute SSIM values on training data.')
-
     parser.add_argument('--num_epochs', type=int, default=50, help='Number of training epochs')
-    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators. If set to 0, no seed '
-                        'will be used.')
-
+    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators. '
+                                                            'Set to 0 to use random seed.')
     parser.add_argument('--num_chans', type=int, default=16, help='Number of ConvNet channels in first layer.')
     parser.add_argument('--fc_size', default=256, type=int, help='Size (width) of fully connected layer(s).')
-
     parser.add_argument('--lr', type=float, default=5e-5, help='Learning rate')
     parser.add_argument('--lr_gamma', type=float, default=0.1,
                         help='Multiplicative factor of learning rate decay')

@@ -16,7 +16,7 @@ from tensorboardX import SummaryWriter
 
 from src.helpers.torch_metrics import compute_ssim, compute_psnr
 from src.helpers.utils import add_mask_params, save_json, str2bool, str2none
-from src.helpers.data_loading import create_data_loader
+from src.helpers.data_loading import create_data_loader, SliceData, DataTransform
 from src.reconstruction_model.reconstruction_model_utils import load_recon_model
 from src.policy_model.policy_model_utils import create_data_range_dict, compute_next_step_reconstruction, compute_scores
 
@@ -24,119 +24,88 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-# def get_psnr(unnorm_recons, gt_exp, data_range):
-#     # Have to reshape to batch . trajectories x res x res and then reshape back to batch x trajectories x res x res
-#     # because of psnr implementation
-#     psnr_recons = torch.clamp(unnorm_recons, 0., 10.).reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution,
-#                                                               args.resolution).to('cpu')
-#     psnr_gt = gt_exp.reshape(gt_exp.size(0) * gt_exp.size(1), 1, args.resolution, args.resolution).to('cpu')
-#     # First duplicate data range over trajectories, then reshape: this to ensure alignment with recon and gt.
-#     psnr_data_range = data_range.expand(-1, gt_exp.size(1), -1, -1)
-#     psnr_data_range = psnr_data_range.reshape(gt_exp.size(0) * gt_exp.size(1), 1, 1, 1).to('cpu')
-#     psnr_scores = psnr(psnr_recons, psnr_gt, reduction='none', data_range=psnr_data_range)
-#     psnr_scores = psnr_scores.reshape(gt_exp.size(0), gt_exp.size(1))
-#     return psnr_scores
-#
-# def acquire_row(kspace, masked_kspace, next_rows, mask, recon_model):
-#     zf, mean, std = acquire_new_zf_batch(kspace, masked_kspace, next_rows)
-#     # Don't forget to change mask for impro_model (necessary if impro model uses mask)
-#     # Also need to change masked kspace for recon model (getting correct next-step zf)
-#     # TODO: maybe do this in the acquire_new_zf_batch() function. Doesn't fit with other functions of same
-#     #  description, but this one is particularly used for this acquisition loop.
-#     for sl, next_row in enumerate(next_rows):
-#         mask[sl, :, :, next_row, :] = 1.
-#         masked_kspace[sl, :, :, next_row, :] = kspace[sl, :, :, next_row, :]
-#     # Get new reconstruction for batch
-#     impro_input = recon_model_forward_pass(args, recon_model, zf)  # TODO: args is global here!
-#     return impro_input, zf, mean, std, mask, masked_kspace
-#
-#
-# class StepMaskFunc:
-#     def __init__(self, step, rows, accelerations):
-#         assert len(rows) == step, 'Mismatch between step and number of acquired rows'
-#         self.step = step
-#         self.rows = rows
-#         assert len(accelerations) == 1, "StepMaskFunc only works for a single acceleration at a time"
-#         self.acceleration = accelerations[0]
-#         self.rng = np.random.RandomState()
-#
-#     def __call__(self, shape, seed=None):
-#         if len(shape) < 3:
-#             raise ValueError('Shape should have 3 or more dimensions')
-#         num_cols = shape[-2]
-#
-#         # Create the mask
-#         num_low_freqs = num_cols // self.acceleration
-#         mask = np.zeros(num_cols)
-#         pad = (num_cols - num_low_freqs + 1) // 2
-#         mask[pad:pad + num_low_freqs] = True
-#         mask[self.rows] = True
-#
-#         # Reshape the mask
-#         mask_shape = [1 for _ in shape]
-#         mask_shape[-2] = num_cols
-#         mask = torch.from_numpy(mask.reshape(*mask_shape).astype(np.float32))
-#
-#         return mask
-#
-#
-# def create_avg_oracle_loader(args, step, rows, split):
-#     mask = StepMaskFunc(step, rows, args.accelerations)
-#
-#     if split in ['dev', 'val']:
-#         dev_path = args.data_path / f'{args.challenge}_val'  # combine with dev STATE
-#         # dev_path = args.data_path / f'{args.challenge}_train_al'  # combine with train STATE and set mult = 1
-#         mult = 2 if args.sample_rate == 0.04 else 1  # TODO: this is now hardcoded to get more validation samples: fix this
-#         # mult = 1
-#         dev_sample_rate = args.sample_rate * mult
-#         data = SliceData(
-#             root=dev_path,
-#             transform=DataTransform(mask, args.resolution, args.challenge, use_seed=True,
-#                                     original_setting=args.original_setting, low_res=args.low_res),
-#             sample_rate=dev_sample_rate,
-#             challenge=args.challenge,
-#             acquisition=args.acquisition,
-#             center_volume=args.center_volume,
-#             state=DEV_STATE
-#         )
-#     elif split == 'test':
-#         test_path = args.data_path / f'{args.challenge}_test_al'  # combine with dev STATE
-#
-#         data = SliceData(
-#             root=test_path,
-#             transform=DataTransform(mask, args.resolution, args.challenge, use_seed=True,
-#                                     original_setting=args.original_setting, low_res=args.low_res),
-#             sample_rate=args.sample_rate,
-#             challenge=args.challenge,
-#             acquisition=args.acquisition,
-#             center_volume=args.center_volume,
-#             state=TEST_STATE
-#         )
-#     elif split == 'train':
-#         train_path = args.data_path / f'{args.challenge}_train_al'  # combine with dev STATE
-#
-#         data = SliceData(
-#             root=train_path,
-#             transform=DataTransform(mask, args.resolution, args.challenge, use_seed=False,
-#                                     original_setting=args.original_setting, low_res=args.low_res),
-#             sample_rate=args.sample_rate,
-#             challenge=args.challenge,
-#             acquisition=args.acquisition,
-#             center_volume=args.center_volume,
-#             state=TRAIN_STATE
-#         )
-#     else:
-#         raise ValueError()
-#
-#     loader = DataLoader(
-#         dataset=data,
-#         batch_size=args.batch_size,
-#         num_workers=args.num_workers,
-#         pin_memory=True,
-#     )
-#     return loader
-#
-#
+def compute_all_scores(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model, data_range):
+    output = torch.zeros((kspace.shape[0], kspace.shape[-2]))
+    # Set all unacquired rows as rows to acquire
+    to_acquire = [[] for _ in range(kspace.shape[0])]
+    unacquired_inds = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0).nonzero(as_tuple=False)
+    for sl, ind in unacquired_inds:
+        to_acquire[sl].append(ind)
+    to_acquire = torch.tensor(to_acquire)
+    _, _, _, recon = compute_next_step_reconstruction(recon_model, kspace, masked_kspace, mask, to_acquire)
+    ssim_scores = compute_scores(args, recon, gt_mean, gt_std, unnorm_gt, data_range, comp_psnr=False)
+    old_slice, idx = -1, -1
+    for sl, ind in unacquired_inds:
+        if sl == old_slice:
+            idx += 1
+        else:
+            idx = 0
+            old_slice = sl
+        output[sl, ind] = ssim_scores[sl, idx]
+    return output
+
+
+class StepMaskFunc:
+    # Mask function for average_oracle
+    def __init__(self, step, rows, accelerations):
+        assert len(rows) == step, 'Mismatch between step and number of acquired rows'
+        self.step = step
+        self.rows = rows
+        assert len(accelerations) == 1, "StepMaskFunc only works for a single acceleration at a time"
+        self.acceleration = accelerations[0]
+        self.rng = np.random.RandomState()
+
+    def __call__(self, shape, seed=None):
+        if len(shape) < 3:
+            raise ValueError('Shape should have 3 or more dimensions')
+        num_cols = shape[-2]
+
+        # Create the mask
+        num_low_freqs = num_cols // self.acceleration
+        mask = np.zeros(num_cols)
+        pad = (num_cols - num_low_freqs + 1) // 2
+        mask[pad:pad + num_low_freqs] = True
+        mask[self.rows] = True
+
+        # Reshape the mask
+        mask_shape = [1 for _ in shape]
+        mask_shape[-2] = num_cols
+        mask = torch.from_numpy(mask.reshape(*mask_shape).astype(np.float32))
+
+        return mask
+
+
+def create_avg_oracle_loader(args, step, rows):
+    mask = StepMaskFunc(step, rows, args.accelerations)
+
+    # TODO: Fix these paths!
+    if args.partition == 'train':
+        path = args.data_path / f'singlecoil_train_al'
+    elif args.partition == 'val':
+        path = args.data_path / f'singlecoil_val'
+    elif args.partition == 'test':
+        path = args.data_path / f'singlecoil_test_al'
+
+    dataset = SliceData(
+        root=path,
+        transform=DataTransform(mask, args.resolution, use_seed=True),
+        dataset=args.dataset,
+        sample_rate=args.sample_rate,
+        acquisition=args.acquisition,
+        center_volume=args.center_volume
+    )
+
+    print(f'{args.partition.capitalize()} slices: {len(dataset)}')
+
+    loader = DataLoader(
+        dataset=dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+    return loader
+
+
 def run_average_oracle(args, recon_model):
     start = time.perf_counter()
     rows = []
@@ -145,22 +114,13 @@ def run_average_oracle(args, recon_model):
     with torch.no_grad():
         for step in range(args.acquisition_steps + 1):
             # Loader for this step: includes starting rows and best rows from previous steps in mask
-            if args.partition in ['dev', 'val']:
-                loader = create_avg_oracle_loader(args, step, rows, 'dev')
-            elif args.partition == 'test':
-                loader = create_avg_oracle_loader(args, step, rows, 'test')
-            elif args.partition == 'train':
-                loader = create_avg_oracle_loader(args, step, rows, 'train')
-            else:
-                raise ValueError
-
-            data_range_dict = create_data_range_dict(loader)
+            loader = create_avg_oracle_loader(args, step, rows)
+            data_range_dict = create_data_range_dict(args, loader)
             sum_impros = 0.
             tbs = 0.
             # Find average best improvement over dataset for this step
             for it, data in enumerate(loader):
                 kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, _ = data
-                # TODO: Maybe normalisation unnecessary for SSIM target?
                 # shape after unsqueeze = batch x channel x columns x rows x complex
                 kspace = kspace.unsqueeze(1).to(args.device)
                 masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
@@ -183,11 +143,11 @@ def run_average_oracle(args, recon_model):
                 psnrs[step] += psnr_val.item()
 
                 tbs += mask.size(0)
-                if step != args.acquisition_steps:  # still acquire, otherwise just need final value, no acquisition
-                    output = get_target(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model,
-                                        recon, data_range)
+                if step != args.acquisition_steps:  # 'output' is required for acquisition
+                    output = compute_all_scores(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std,
+                                                recon_model, data_range)
                     output = output.to('cpu').numpy()
-                    sum_impros += output.sum(axis=0)
+                    sum_impros += output.sum(axis=0)  # sum of ssim_scores over slices for each measurement
 
             if step != args.acquisition_steps:  # still acquire, otherwise just need final value, no acquisition
                 rows.append(np.argmax(sum_impros / tbs))
@@ -196,27 +156,6 @@ def run_average_oracle(args, recon_model):
     psnrs /= tbs
 
     return ssims, psnrs, time.perf_counter() - start
-
-
-def compute_all_scores(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model, data_range):
-    output = torch.zeros((kspace.shape[0], kspace.shape[-2]))
-    # Set all unacquired rows as rows to acquire
-    to_acquire = [[] for _ in range(kspace.shape[0])]
-    unacquired_inds = (mask.squeeze(1).squeeze(1).squeeze(-1) == 0).nonzero(as_tuple=False)
-    for sl, ind in unacquired_inds:
-        to_acquire[sl].append(ind)
-    to_acquire = torch.tensor(to_acquire)
-    _, _, _, recon = compute_next_step_reconstruction(recon_model, kspace, masked_kspace, mask, to_acquire)
-    ssim_scores = compute_scores(args, recon, gt_mean, gt_std, unnorm_gt, data_range, comp_psnr=False)
-    old_slice, idx = -1, -1
-    for sl, ind in unacquired_inds:
-        if sl == old_slice:
-            idx += 1
-        else:
-            idx = 0
-            old_slice = sl
-        output[sl, ind] = ssim_scores[sl, idx]
-    return output
 
 
 def run_baseline(args, recon_model, loader, data_range_dict):
@@ -364,13 +303,13 @@ def main(args):
 def create_arg_parser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators')
+    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators. '
+                                                            'Set to 0 to use random seed.')
     parser.add_argument('--resolution', default=128, type=int, help='Resolution of images')
     parser.add_argument('--dataset', choices=['knee', 'brain'], default='knee',
                         help='Dataset to use.')
     parser.add_argument('--wandb', type=str2bool, default=False,
                         help='Whether to use wandb logging for this run.')
-
     parser.add_argument('--model_type', choices=['random', 'oracle', 'average_oracle', 'equispace_onesided',
                                                  'equispace_twosided'], required=True,
                         help='Type of baseline to run.')
