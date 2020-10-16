@@ -277,25 +277,25 @@ def main(args):
     writer = SummaryWriter(log_dir=args.run_dir / 'summary')
 
     if args.model_type == 'average_oracle':
-        oracle_ssims, oracle_psnrs, oracle_time = run_average_oracle(args, recon_model)
+        baseline_ssims, baseline_psnrs, baseline_time = run_average_oracle(args, recon_model)
     else:
-        # Create data loaders
+        # Create data loader
         loader = create_data_loader(args, args.partition)
         data_range_dict = create_data_range_dict(args, loader)
-        oracle_ssims, oracle_psnrs, oracle_time = run_baseline(args, recon_model, loader, data_range_dict)
+        baseline_ssims, baseline_psnrs, baseline_time = run_baseline(args, recon_model, loader, data_range_dict)
 
     # Logging
-    ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_ssims)])
-    psnrs_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(oracle_psnrs)])
+    ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(baseline_ssims)])
+    psnrs_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(baseline_psnrs)])
     logging.info(f'  SSIM = [{ssims_str}]')
     logging.info(f'  PSNR = [{psnrs_str}]')
-    logging.info(f'  Time = {oracle_time:.2f}s')
+    logging.info(f'  Time = {baseline_time:.2f}s')
 
     # For storing in wandb
     for epoch in range(args.num_epochs + 1):
         if args.wandb:
-            wandb.log({f'{args.partition}_ssims': {str(key): val for key, val in enumerate(oracle_ssims)}}, step=epoch)
-            wandb.log({f'{args.partition}_psnrs': {str(key): val for key, val in enumerate(oracle_psnrs)}}, step=epoch)
+            wandb.log({f'{args.partition}_ssims': {str(key): val for key, val in enumerate(baseline_ssims)}}, step=epoch)
+            wandb.log({f'{args.partition}_psnrs': {str(key): val for key, val in enumerate(baseline_psnrs)}}, step=epoch)
 
     writer.close()
 
