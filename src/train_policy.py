@@ -478,8 +478,8 @@ if __name__ == '__main__':
 
     if base_args.test_multi:
         assert not base_args.do_train, "Doing multiple model testing: do_train must be False."
-        assert (base_args.policy_model_list[0] is not None,
-                "Doing multiple model testing: must have list of policy models.")
+        assert base_args.policy_model_list[0] is not None, ("Doing multiple model testing: must "
+                                                            "have list of policy models.")
 
         for model in base_args.policy_model_list:
             args = copy.deepcopy(base_args)
