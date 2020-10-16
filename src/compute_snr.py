@@ -90,11 +90,10 @@ def add_base_args(args, policy_args):
     policy_args.policy_model_checkpoint = args.policy_model_checkpoint
     policy_args.recon_model_checkpoint = args.recon_model_checkpoint
     policy_args.data_path = args.data_path
-    policy_args.sample_rate = args.sample_rate
 
 
 def compute_gradients(args, epoch):
-    param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+    param_dir = (f'epoch{epoch}_t{args.num_trajectories}'
                  f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
     param_dir = args.policy_model_checkpoint.parent / param_dir
     param_dir.mkdir(parents=True, exist_ok=True)
@@ -111,7 +110,7 @@ def compute_gradients(args, epoch):
 
     # Check if all gradients already stored in file for more runs
     for r in range(1, 11, 1):  # Check up to 10 runs
-        tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+        tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}'
                          f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
         tmp_weight_path = args.policy_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}.pkl'
         tmp_bias_path = args.policy_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}.pkl'
@@ -142,7 +141,7 @@ def compute_gradients(args, epoch):
 
     # Check if some part of the gradients already computed
     for r in range(args.data_runs, 0, -1):
-        tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
+        tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}'
                          f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
         tmp_weight_path = args.policy_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}.pkl'
         tmp_bias_path = args.policy_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}.pkl'
@@ -231,7 +230,6 @@ def main(base_args):
     results_dict = defaultdict(lambda: defaultdict(dict))
 
     runs = base_args.data_runs
-    sr = base_args.sample_rate
     traj = base_args.num_trajectories
 
     for i, run_dir in enumerate(base_args.policy_model_dir_list):
@@ -243,6 +241,7 @@ def main(base_args):
             mode = 'nongreedy'
             label = args_dict.get('gamma', None)
 
+        sr = json.loads(args_dict['sample_rate'])
         accels = json.loads(args_dict['accelerations'])
         steps = json.loads(args_dict['acquisition_steps'])
         assert len(accels) == 1, "Using models trained with various accelerations is not supported!"
@@ -294,32 +293,33 @@ def main(base_args):
 def create_arg_parser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--dataset', default='knee', choices=['knee', 'brain'],
-                        help='Dataset type to use.')
+    # parser.add_argument('--dataset', default='knee', choices=['knee', 'brain'],
+    #                     help='Dataset type to use.')
     parser.add_argument('--data_path', type=pathlib.Path, required=True,
                         help='Path to the dataset.')
-    parser.add_argument('--sample_rate', type=float, default=0.5,
-                        help='Fraction of total volumes to include')
     parser.add_argument('--recon_model_checkpoint', type=pathlib.Path, required=True,
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
-    parser.add_argument('--batch_size', default=16, type=int, help='Mini batch size')
     parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators '
                                                             'Set to 0 to use random seed.')
+
+    parser.add_argument('--data_runs', type=int, default=3,
+                        help='Number of times to run same SNR experiment for averaging.')
+    parser.add_argument('--batch_size', default=16, type=int, help='Mini batch size')
     parser.add_argument('--batches_step', type=int, default=1,
                         help='Number of batches to compute before doing an optimizer step.')
+    parser.add_argument('--num_trajectories', type=int, default=16,
+                        help='Number of trajectories to sample SNR.')
+
+    parser.add_argument('--epochs', nargs='+', type=int, default=[0, 9, 19, 29, 39, 49],
+                        help='Epochs at which to calculate SNR.')
+    parser.add_argument('--force_computation', type=str2bool, default=False,
+                        help='Whether to force recomputing SNR if already stored on disk.')
+
     parser.add_argument('--policy_model_dir_list', nargs='+', type=str, default=[None],
                         help='List of policy model dirs for models to calculate SNR for.')
     parser.add_argument('--base_policy_model_dir', type=pathlib.Path, default=None,
                         help='Base dir for policy models.')
-    parser.add_argument('--epochs', nargs='+', type=int, default=[0, 9, 19, 29, 39, 49],
-                        help='Epochs at which to calculate SNR.')
-    parser.add_argument('--data_runs', type=int, default=3,
-                        help='Number of times to run same SNR experiment for averaging.')
-    parser.add_argument('--force_computation', type=str2bool, default=False,
-                        help='Whether to force recomputing SNR if already stored on disk.')
-    parser.add_argument('--num_trajectories', type=int, default=16,
-                        help='Number of trajectories to sample SNR.')
 
     return parser
 
