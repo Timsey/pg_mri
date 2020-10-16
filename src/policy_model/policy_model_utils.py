@@ -94,7 +94,6 @@ def acquire_rows_in_batch_parallel(k, mk, mask, to_acquire):
 def compute_next_step_reconstruction(recon_model, kspace, masked_kspace, mask, next_rows):
     # This computation is done by reshaping the masked k-space tensor to (batch . num_trajectories x 1 x res x res)
     # and then reshaping back after performing a reconstruction.
-    # TODO: check that this works both for channel size 1 and > 1, als batch_size 1
     mask, masked_kspace = acquire_rows_in_batch_parallel(kspace, masked_kspace, mask, next_rows)
     channel_size = masked_kspace.shape[1]
     res = masked_kspace.size(-2)

@@ -47,11 +47,11 @@ Scripts will create a datetime stamped folder in <path_to_output> to store all r
 #### Knee
 ##### Base horizon greedy (1GPU)
 ```
-CUDA_VISIBLE_DEVICES=0 python -m src.train_policy --data_path <path_to_data> --exp_dir <path_to_output> --recon_model_checkpoint <path_to_reconstruction_model.pt> --model_type greedy --accelerations 8 --acquisition_steps 16 --project <wandb_project_name> --wandb True
+CUDA_VISIBLE_DEVICES=0 python -m src.train_policy --data_path <path_to_data> --exp_dir <path_to_output> --recon_model_checkpoint <path_to_reconstruction_model.pt> --model_type greedy --project <wandb_project_name> --wandb True
 ```
 ##### Base horizon non-greedy (1GPU)
 ```
-CUDA_VISIBLE_DEVICES=0 python -m src.train_policy --data_path <path_to_data> --exp_dir <path_to_output> --recon_model_checkpoint <path_to_reconstruction_model.pt> --model_type nongreedy --batch_size 4 --batches_step 4 --gamma 1 --lr_gamma 0.5 --scheduler_type multistep --accelerations 8 --acquisition_steps 16 --project <wandb_project_name> --wandb True
+CUDA_VISIBLE_DEVICES=0 python -m src.train_policy --data_path <path_to_data> --exp_dir <path_to_output> --recon_model_checkpoint <path_to_reconstruction_model.pt> --model_type nongreedy --batch_size 4 --batches_step 4 --gamma 1 --lr_gamma 0.5 --scheduler_type multistep --project <wandb_project_name> --wandb True
 ```
 ##### Long horizon greedy (1GPU)
 ```
@@ -64,11 +64,11 @@ CUDA_VISIBLE_DEVICES=0,1 python -m src.train_policy --data_path <path_to_data> -
 #### Brain
 ##### Base horizon greedy (1GPU)
 ```
-CUDA_VISIBLE_DEVICES=0 python -m src.train_policy --dataset brain --data_path <path_to_data> --exp_dir <path_to_output> --resolution 256 --recon_model_checkpoint <path_to_reconstruction_model.pt> --num_chans 8 --sample_rate 0.2 --num_layers 5 --center_volume False --model_type greedy --accelerations 8 --acquisition_steps 16 --project <wandb_project_name> --wandb True
+CUDA_VISIBLE_DEVICES=0 python -m src.train_policy --dataset brain --data_path <path_to_data> --exp_dir <path_to_output> --resolution 256 --recon_model_checkpoint <path_to_reconstruction_model.pt> --num_chans 8 --sample_rate 0.2 --num_layers 5 --center_volume False --model_type greedy --project <wandb_project_name> --wandb True
 ```
 ##### Base horizon non-greedy (2GPU)
 ```
-CUDA_VISIBLE_DEVICES=0,1 python -m src.train_policy --dataset brain --data_path <path_to_data> --exp_dir <path_to_output> --resolution 256 --recon_model_checkpoint <path_to_reconstruction_model.pt> --num_chans 8 --sample_rate 0.2 --num_layers 5 --center_volume False --model_type nongreedy --batch_size 4 --batches_step 4 --gamma 1 --lr_gamma 0.5 --scheduler_type multistep --accelerations 8 --acquisition_steps 16 --project <wandb_project_name> --wandb True
+CUDA_VISIBLE_DEVICES=0,1 python -m src.train_policy --dataset brain --data_path <path_to_data> --exp_dir <path_to_output> --resolution 256 --recon_model_checkpoint <path_to_reconstruction_model.pt> --num_chans 8 --sample_rate 0.2 --num_layers 5 --center_volume False --model_type nongreedy --batch_size 4 --batches_step 4 --gamma 1 --lr_gamma 0.5 --scheduler_type multistep --project <wandb_project_name> --wandb True
 ```
 ##### Long horizon greedy (1GPU)
 ```

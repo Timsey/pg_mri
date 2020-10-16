@@ -404,43 +404,39 @@ def create_arg_parser():
                         help='Period of learning rate decay')
     parser.add_argument('--lr_multi_step_size', nargs='+', type=int, default=[10, 20, 30, 40],
                         help='Epoch at which to decay the lr if using multistep scheduler.')
+    parser.add_argument('--model_type', type=str, default='greedy', choices=['greedy', 'nongreedy'],
+                        help="'greedy' to train greedy model, 'nongreedy' to train non-greedy model")
+    parser.add_argument('--batches_step', type=int, default=1,
+                        help='Number of dataloader batches to compute before doing an optimiser step. This is mostly '
+                             'used to train non-greedy models with larger batch sizes.')
+    parser.add_argument('--no_baseline', type=str2bool, default=False,
+                        help="Whether to not use a reward baseline at all. Currently only implemented for 'greedy'.")
+    parser.add_argument('--gamma', type=float, default=1,
+                        help='Discount factor in RL. Currently only used for non-greedy training.')
+    parser.add_argument('--milestones', nargs='+', type=int, default=[0, 9, 19, 29, 39, 49],
+                        help='Epochs at which to save model separately.')
 
     parser.add_argument('--do_train', type=str2bool, default=True,
                         help='Whether to do training or testing.')
     parser.add_argument('--policy_model_checkpoint', type=pathlib.Path, default=None,
                         help='Path to a pretrained policy model if do_train is False (testing).')
 
-    parser.add_argument('--milestones', nargs='+', type=int, default=[0, 9, 19, 29, 39, 49],
-                        help='Epochs at which to save model separately.')
-
     parser.add_argument('--wandb',  type=str2bool, default=False,
                         help='Whether to use wandb logging for this run.')
-    parser.add_argument('--num_test_trajectories', type=int, default=1,
-                        help='Number of trajectories to use when testing sampling policy.')
+    parser.add_argument('--project',  type=str2none, default=None,
+                        help='Wandb project name to use.')
 
     parser.add_argument('--resume',  type=str2bool, default=False,
                         help='Continue training previous run?')
     parser.add_argument('--run_id', type=str2none, default=None,
                         help='Wandb run_id to continue training from.')
 
+    parser.add_argument('--num_test_trajectories', type=int, default=1,
+                        help='Number of trajectories to use when testing sampling policy.')
     parser.add_argument('--test_multi',  type=str2bool, default=False,
                         help='Test multiple models in one script')
     parser.add_argument('--policy_model_list', nargs='+', type=str, default=[None],
                         help='List of policy model paths for multi-testing.')
-
-    parser.add_argument('--project',  type=str2none, default=None,
-                        help='Wandb project name to use.')
-
-    parser.add_argument('--model_type', type=str, default='greedy', choices=['greedy', 'nongreedy'],
-                        help="'greedy' to train greedy model, 'nongreedy' to train non-greedy model")
-    parser.add_argument('--batches_step', type=int, default=1,
-                        help='Number of dataloader batches to compute before doing an optimiser step. This is mostly '
-                             'used to train non-greedy models with larger batch sizes.')
-
-    parser.add_argument('--no_baseline', type=str2bool, default=False,
-                        help="Whether to not use a reward baseline at all. Currently only implemented for 'greedy'.")
-    parser.add_argument('--gamma', type=float, default=1,
-                        help='Discount factor in RL. Currently only used for non-greedy training.')
 
     return parser
 

@@ -80,23 +80,23 @@ def compute_snr(args, weight_path, bias_path):
     return snr, std
 
 
-def add_base_args(args, impro_args):
+def add_base_args(args, policy_args):
     # Batch size has to be set to match those in args.
-    impro_args.batch_size = args.batch_size
-    impro_args.batches_step = 1
-    # Num trajectories is fixed by setting k in compute_gradients, so don't need to change this
+    policy_args.batch_size = args.batch_size
+    policy_args.batches_step = args.batches_step
+    policy_args.num_trajectories = args.num_trajectories
 
-    # Fix paths to local machine
-    impro_args.impro_model_checkpoint = args.impro_model_checkpoint
-    impro_args.recon_model_checkpoint = args.recon_model_checkpoint
-    impro_args.data_path = args.data_path
-    impro_args.sample_rate = args.sample_rate
+    # Fix paths to those on the running machine
+    policy_args.policy_model_checkpoint = args.policy_model_checkpoint
+    policy_args.recon_model_checkpoint = args.recon_model_checkpoint
+    policy_args.data_path = args.data_path
+    policy_args.sample_rate = args.sample_rate
 
 
 def compute_gradients(args, epoch):
     param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
                  f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
-    param_dir = args.impro_model_checkpoint.parent / param_dir
+    param_dir = args.policy_model_checkpoint.parent / param_dir
     param_dir.mkdir(parents=True, exist_ok=True)
 
     # Create storage path
@@ -113,8 +113,8 @@ def compute_gradients(args, epoch):
     for r in range(1, 11, 1):  # Check up to 10 runs
         tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
                          f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
-        tmp_weight_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}.pkl'
-        tmp_bias_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}.pkl'
+        tmp_weight_path = args.policy_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}.pkl'
+        tmp_bias_path = args.policy_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}.pkl'
         # If computation already stored for a higher number of runs, just grab the relevant bit and do not recompute.
         if tmp_weight_path.exists() and tmp_bias_path.exists() and not args.force_computation:
             print(f'Gradients up to run {r} already stored in: \n    {tmp_weight_path}\n    {tmp_bias_path}')
@@ -144,8 +144,8 @@ def compute_gradients(args, epoch):
     for r in range(args.data_runs, 0, -1):
         tmp_param_dir = (f'epoch{epoch}_t{args.num_trajectories}_sr{args.sample_rate}'
                          f'_runs{r}_batch{args.batch_size}_bs{args.batches_step}')
-        tmp_weight_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}.pkl'
-        tmp_bias_path = args.impro_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}.pkl'
+        tmp_weight_path = args.policy_model_checkpoint.parent / tmp_param_dir / f'weight_grads_r{r}.pkl'
+        tmp_bias_path = args.policy_model_checkpoint.parent / tmp_param_dir / f'bias_grads_r{r}.pkl'
         # If part already computed, skip this part of the computation by setting start_run to the highest
         # computed run. Also load the weights.
         if tmp_weight_path.exists() and tmp_bias_path.exists() and not args.force_computation:
@@ -164,7 +164,6 @@ def compute_gradients(args, epoch):
     loader = create_data_loader(policy_args, 'train', shuffle=True)
     data_range_dict = create_data_range_dict(policy_args, loader)
 
-    k = args.num_trajectories
     for r in range(start_run, args.data_runs):
         print(f"\n    Run {r + 1} ...")
         ssims = 0
@@ -175,14 +174,14 @@ def compute_gradients(args, epoch):
             cbatch += 1
             tbs += mask.size(0)
             # shape after unsqueeze = batch x channel x columns x rows x complex
-            kspace = kspace.unsqueeze(1).to(args.device)
-            masked_kspace = masked_kspace.unsqueeze(1).to(args.device)
-            mask = mask.unsqueeze(1).to(args.device)
+            kspace = kspace.unsqueeze(1).to(policy_args.device)
+            masked_kspace = masked_kspace.unsqueeze(1).to(policy_args.device)
+            mask = mask.unsqueeze(1).to(policy_args.device)
             # shape after unsqueeze = batch x channel x columns x rows
-            zf = zf.unsqueeze(1).to(args.device)
-            gt = gt.unsqueeze(1).to(args.device)
-            gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
-            gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(args.device)
+            zf = zf.unsqueeze(1).to(policy_args.device)
+            gt = gt.unsqueeze(1).to(policy_args.device)
+            gt_mean = gt_mean.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(policy_args.device)
+            gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(policy_args.device)
             unnorm_gt = gt * gt_std + gt_mean
             data_range = torch.stack([data_range_dict[vol] for vol in fname])
 
@@ -198,13 +197,14 @@ def compute_gradients(args, epoch):
             action_list = []
             logprob_list = []
             reward_list = []
-            for step in range(args.acquisition_steps):  # Loop over acquisition steps
-                loss, mask, masked_kspace, recons = compute_backprop_trajectory(args, kspace, masked_kspace, mask,
-                                                                                unnorm_gt, recons, gt_mean, gt_std,
-                                                                                data_range, model, recon_model, step,
-                                                                                action_list, logprob_list, reward_list)
+            for step in range(policy_args.acquisition_steps):  # Loop over acquisition steps
+                loss, mask, masked_kspace, recons = compute_backprop_trajectory(policy_args, kspace, masked_kspace,
+                                                                                mask, unnorm_gt, recons, gt_mean,
+                                                                                gt_std, data_range, model, recon_model,
+                                                                                step, action_list, logprob_list,
+                                                                                reward_list)
 
-            if cbatch == args.batches_step:
+            if cbatch == policy_args.batches_step:
                 # Store gradients for SNR
                 for name, param in model.named_parameters():
                     if name == "module.fc_out.4.weight":  # TODO: don't hardcode this
@@ -217,8 +217,8 @@ def compute_gradients(args, epoch):
             ssims += np.array(batch_ssims)
 
         ssims /= tbs
-        print(f"     - SSIMs: \n       {ssims}")
-        print(f"     - Adding grads of run {r + 1} to: \n       {param_dir}")
+        print(f"    - SSIMs: \n       {ssims}")
+        print(f"    - Adding grads of run {r + 1} to: \n       {param_dir}")
         with open(weight_path, 'wb') as f:
             pickle.dump(weight_grads, f)
         with open(bias_path, 'wb') as f:
@@ -233,41 +233,31 @@ def main(base_args):
     runs = base_args.data_runs
     sr = base_args.sample_rate
     traj = base_args.num_trajectories
-    style = base_args.style
 
-    for i, run_dir in enumerate(base_args.impro_model_dir_list):
-        args_dict = load_json(base_args.base_impro_model_dir / run_dir / 'args.json')
-        if 'num_target_rows' in args_dict:
+    for i, run_dir in enumerate(base_args.policy_model_dir_list):
+        args_dict = load_json(base_args.base_policy_model_dir / run_dir / 'args.json')
+        if args_dict['model_type'] == 'greedy':
             mode = 'greedy'
-            assert args_dict['scheduler_type'] == 'step', 'Multistep greedy not supported.'
-            if str2bool(args_dict['no_baseline']):
-                label = 'nob'
-            else:
-                if args_dict['estimator'] == 'wor':
-                    label = 'wor'
-                elif args_dict['estimator'] == 'wr':
-                    label = 'wr'
-        elif 'num_trajectories' in args_dict:
-            mode = 'nongreedy'
-            label = args_dict.get('gamma', None)  # For old models
+            label = 'greedy'
         else:
-            raise KeyError()
+            mode = 'nongreedy'
+            label = args_dict.get('gamma', None)
 
         accels = json.loads(args_dict['accelerations'])
         steps = json.loads(args_dict['acquisition_steps'])
-        assert len(accels) == 1, "Various accelerations..."
+        assert len(accels) == 1, "Using models trained with various accelerations is not supported!"
         accel = accels[0]
 
         for j, epoch in enumerate(base_args.epochs):
             args = copy.deepcopy(base_args)
             args.mode = mode
 
-            if epoch != 49:
-                args.impro_model_checkpoint = base_args.base_impro_model_dir / run_dir / 'model_{}.pt'.format(epoch)
-            else:
-                args.impro_model_checkpoint = base_args.base_impro_model_dir / run_dir / 'model.pt'
+            if epoch != max(base_args.epochs):
+                args.policy_model_checkpoint = base_args.base_policy_model_dir / run_dir / 'model_{}.pt'.format(epoch)
+            else:  # Last epoch model is not always stored separately depending on logging details
+                args.policy_model_checkpoint = base_args.base_policy_model_dir / run_dir / 'model.pt'
 
-            pr_str = (f"Job {i*len(base_args.epochs)+j+1}/{len(base_args.impro_model_dir_list) * len(base_args.epochs)}"
+            pr_str = (f"Job {i*len(base_args.epochs)+j+1}/{len(base_args.policy_model_dir_list) * len(base_args.epochs)}"
                       f"\n   mode: {mode:>9}, accel: {accel:>2}, steps: {steps:>2}, label: {label},\n"
                       f"   ckpt: {epoch:>2}, runs: {runs:>2}, srate: {sr:>3}, traj: {traj:>2}")
             print(pr_str)
@@ -280,7 +270,7 @@ def main(base_args):
                             'weight_grads': str(weight_path),
                             'bias_grads': str(bias_path)}
 
-            summary_path = param_dir / f'snr_{style}_summary.json'
+            summary_path = param_dir / f'snr_summary.json'
             print(f"   Saving summary to {summary_path}")
             save_json(summary_path, summary_dict)
 
@@ -290,7 +280,7 @@ def main(base_args):
             print(f'SNR: {snr}, STD: {std}')
 
     savestr = f'{datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")}.json'
-    save_dir = pathlib.Path(os.getcwd()) / f'snr_results_{style}'
+    save_dir = pathlib.Path(os.getcwd()) / f'snr_results'
     save_dir.mkdir(parents=True, exist_ok=True)
     save_file = save_dir / savestr
 
@@ -304,7 +294,7 @@ def main(base_args):
 def create_arg_parser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--dataset', default='knee', choices= ['knee', 'brain'],
+    parser.add_argument('--dataset', default='knee', choices=['knee', 'brain'],
                         help='Dataset type to use.')
     parser.add_argument('--data_path', type=pathlib.Path, required=True,
                         help='Path to the dataset.')
@@ -313,12 +303,7 @@ def create_arg_parser():
     parser.add_argument('--recon_model_checkpoint', type=pathlib.Path, required=True,
                         help='Path to a pretrained reconstruction model. If None then recon-model-name should be'
                         'set to zero_filled.')
-    parser.add_argument('--num_workers', type=int, default=4, help='Number of workers to use for data loading')
-    parser.add_argument('--device', type=str, default='cuda',
-                        help='Which device to train on. Set to "cuda" to use the GPU')
     parser.add_argument('--batch_size', default=16, type=int, help='Mini batch size')
-    parser.add_argument('--data_parallel', type=str2bool, default=True,
-                        help='If set, use multiple GPUs using data parallelism')
     parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators '
                                                             'Set to 0 to use random seed.')
     parser.add_argument('--batches_step', type=int, default=1,
