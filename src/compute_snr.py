@@ -46,7 +46,12 @@ def load_policy_model(checkpoint_file):
 
 def snr_from_grads(args, grads):
     snr_list = []
-    assert grads.shape[0] % args.data_runs == 0, 'Something went wrong with concatenating gradients over runs.'
+    assert grads.shape[0] % args.data_runs == 0, ('Something went wrong with concatenating gradients over runs. This '
+                                                  'is usually the result of a previous run having been aborted halfway '
+                                                  'through finishing a computation. Check that gradients stored for '
+                                                  'the last epoch mentioned in the log (above) are complete. If not: ' 
+                                                  'delete the relevant epoch{}_t{}_runs{}_batch{}_bs{} directory and '
+                                                  'rerun this script.')
     grads_per_run = grads.shape[0] // args.data_runs
     for i in range(grads.shape[0] // grads_per_run):
         # Grab gradients belonging to a single run
@@ -165,7 +170,6 @@ def compute_gradients(args, epoch):
 
     for r in range(start_run, args.data_runs):
         print(f"\n    Run {r + 1} ...")
-        ssims = 0
         cbatch = 0
         tbs = 0
         for it, data in enumerate(loader):  # Randomly shuffled every time
@@ -183,12 +187,7 @@ def compute_gradients(args, epoch):
             gt_std = gt_std.unsqueeze(1).unsqueeze(2).unsqueeze(3).to(policy_args.device)
             unnorm_gt = gt * gt_std + gt_mean
             data_range = torch.stack([data_range_dict[vol] for vol in fname])
-
             recons = recon_model(zf)
-            unnorm_recon = recons * gt_std + gt_mean
-            base_score = compute_ssim(unnorm_recon, unnorm_gt, size_average=False,
-                                      data_range=data_range).mean(dim=(-1, -2))
-            batch_ssims = [base_score.sum().item()]
 
             if cbatch == 1:
                 optimiser.zero_grad()
@@ -212,11 +211,6 @@ def compute_gradients(args, epoch):
                         bias_grads.append(param.grad.cpu().numpy())
                 cbatch = 0
 
-            # ssims shape = al_steps
-            ssims += np.array(batch_ssims)
-
-        ssims /= tbs
-        print(f"    - SSIMs: \n       {ssims}")
         print(f"    - Adding grads of run {r + 1} to: \n       {param_dir}")
         with open(weight_path, 'wb') as f:
             pickle.dump(weight_grads, f)
