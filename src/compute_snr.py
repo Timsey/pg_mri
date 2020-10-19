@@ -26,8 +26,16 @@ def load_policy_model(checkpoint_file):
     model = build_policy_model(args)
 
     # Only store gradients for final layer
-    for name, param in model.named_parameters():
-        if name in ["fc_out.4.weight", "fc_out.4.bias"]:
+    num = len(list(model.named_parameters()))
+    for i, (name, param) in enumerate(model.named_parameters()):
+        if i in [num - 1, num - 2]:  # weight and biases of last layer
+            assert name in ['fc_out.4.weight', 'fc_out.4.bias'], ("Parameter for which to register gradients has "
+                                                                  "unexpected name. This can happen due to a change "
+                                                                  "in the policy model definition. If this is intended "
+                                                                  "this assert can be removed, but make sure that the "
+                                                                  "correct parameters are given a gradient. This "
+                                                                  "should then also be fixed at the bottom of "
+                                                                  "compute_gradients().")
             param.requires_grad = True
         else:
             param.requires_grad = False
@@ -204,10 +212,11 @@ def compute_gradients(args, epoch):
 
             if cbatch == policy_args.batches_step:
                 # Store gradients for SNR
-                for name, param in model.named_parameters():
-                    if name == "module.fc_out.4.weight":  # TODO: don't hardcode this
+                num = len(list(model.named_parameters()))
+                for i, (name, param) in enumerate(model.named_parameters()):
+                    if i == num - 1:  # biases of last layer
                         weight_grads.append(param.grad.cpu().numpy())
-                    elif name == "module.fc_out.4.bias":
+                    elif i == num - 2:  # weights of last layer
                         bias_grads.append(param.grad.cpu().numpy())
                 cbatch = 0
 
