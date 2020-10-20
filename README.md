@@ -1,21 +1,26 @@
 # Experimental design for MRI by greedy policy search
 This repository is the official implementation of: [Experimental design for MRI by greedy policy search]() (NeurIPS, 2020).
 
-> Optional: include a graphic explaining your approach/main result, bibtex entry, link to demos, blog posts and tutorials
+
 
 ## Requirements
 
 To install requirements:
 
-```setup
+```
 pip install -r requirements.txt
 ```
 
-> Describe how to set up the environment, e.g. pip/conda/docker commands, download datasets, etc...
+Or using conda:
 
-Data is fastMRI, explain preprocessing! And hardcoded folder names.
+```
+conda env create -f environment.yml
+```
 
-Data should be stored as follows, as the top-level folders are hardcoded into our data loaders.
+Note: these environments are complete, but not minimal.
+
+
+Data should be stored as follows, as the top-level folders are hardcoded into our data loaders (see `src/helpers/data_loading.py`).
 ```
 <path_to_data>
   singlecoil_train/
@@ -23,12 +28,12 @@ Data should be stored as follows, as the top-level folders are hardcoded into ou
   singlecoil_test/
 ```
 
-This corresponds somewhat to the default download settings of the fastMRI data repository. For both Knee and Brain datasets the original test data contains not ground truths, and so we construct a new `singlecoil_test` from `singlecoil_train`, as explained in the paper.
-The default Brain data is `multicoil_` instead of `singlecoil_`. Note that we do use not use the multicoil k-space and instead construct singlecoil k-space from the ground truth images. To save on I/O, we recommend removing the multicoil k-space from the `.h5` files. For naming consistency, we have also renamed `multicoil_` to `singlecoil_` for Brain data.
+This corresponds somewhat to the default download settings of the fastMRI data repository. For both Knee and Brain datasets the original test data contains not ground truths, and so we construct a new `singlecoil_test` from `singlecoil_train`, as explained in the paper. The IPython notebook `split_data.ipynb` in `notebooks` provides a utility for this.
+The default Brain data directory names are `multicoil_` instead of `singlecoil_`. Note that we do use not use the multicoil k-space and instead construct singlecoil k-space from the ground truth images. To save on I/O, we recommend removing the multicoil k-space from the `.h5` files (`split_data.ipynb` contains a utility for this). For naming consistency, we have also renamed `multicoil_` to `singlecoil_` for Brain data.
 
 
 ## Training
-All command should be run from the repository root folder. Logging is done using Tensorboard.
+All commands should be run from the repository root folder. Logging is done using Tensorboard.
 ### Reconstruction models
 Scripts will store results directly in <path_to_output>, so make sure to change this for different runs!
 #### Knee
@@ -82,7 +87,7 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python -m src.train_policy --dataset brain --data_p
 
 ## Evaluation
 ### Reconstruction models
-To evaluate any reconstruction model on validation data, run:
+All commands should be run from the repository root folder. To evaluate any reconstruction model on validation data, run:
 ```
 CUDA_VISIBLE_DEVICES=0 python -m src.train_reconstruction --do_train False --data_path <path_to_data> --recon_model_checkpoint <path_to_reconstruction_model.pt> --partition val
 ```
@@ -114,35 +119,34 @@ CUDA_VISIBLE_DEVICES=0 python -m src.run_baseline_models --dataset brain --resol
 CUDA_VISIBLE_DEVICES=0 python -m src.run_baseline_models --dataset brain --resolution 256 --data_path <path_to_data> --recon_model_checkpoint <path_to_reconstruction_model.pt> --exp_dir <path_to_output> --project <wandb_project_name> --wandb True --sample_rate 0.2 --center_volume False --accelerations 32 --acquisition_steps 28 --model_type random
 ```
 
-> Describe how to evaluate the trained models on benchmarks reported in the paper, give commands that produce the results (section below).
+
 
 ## SNR calculations
+The `compute_snr.py` script allows for computation of SNR for multiple policy models at a time, given in the `<policy_model_dirs>` argument.
+
+Notes: `<base_policy_model_dir>` in the below command will typically correspond to `exp_dir` in `train_policy.py`. `<policy_model_dirs>` are the datetime-stamped directory names where the policy models are stored by `train_policy.py`.
+
+Be sure to specify the (Knee or Brain) data path and reconstruction model that corresponds to the policy models provided.
+
+The command should be run from the repository root folder. 
+```
+CUDA_VISIBLE_DEVICES=0 python -m src.compute_snr --data_path <path_to_data> --recon_model_checkpoint <path_to_reconstruction_model.pt> --base_policy_model_dir <base_policy_model_dir> --policy_model_dir_list <policy_model_dirs>
+```
+
+
 
 ## Reproducing figures
+Figures can be reproduced using the IPython notebooks in the `notebooks` directory. Note that they require the specification of paths to data, reconstruction models, and policy models. With the exception of `visualise_policies.ipynb`, all notebooks require usage of the Weights and Biases API (and policy models stored using Weights and Biases).
 
-## Pre-trained Models
-
-You can download pretrained models here:
-
-- [My awesome model](https://drive.google.com/mymodel.pth) trained on ImageNet using parameters x,y,z. 
-
-> Give a link to where/how the pretrained models can be downloaded and how they were trained (if applicable).  Alternatively you can have an additional column in your results table with a link to the models.
-
-## Results
-
-Our model achieves the following performance on :
-
-### [Image Classification on ImageNet](https://paperswithcode.com/sota/image-classification-on-imagenet)
-
-| Model name         | Top 1 Accuracy  | Top 5 Accuracy |
-| ------------------ |---------------- | -------------- |
-| My awesome model   |     85%         |      95%       |
-
-> Include a table of results from your paper, and link back to the leaderboard for clarity and context. If your main result is a figure, include that figure and link to the command or notebook to reproduce it. 
+- `visualise_policies.ipynb`: visualise average (marginal) policies and individual reconstructions.
+- `evaluate_ssim.ipynb`: evaluate policy models on test data and compute averages.
+- `mi_ent_curves.ipynb`: compute and visualise test data mutual information and entropies for policy models.
+- `learning_curves.ipynb`: visualise learning curves on validation and train data.
+- `split_data.ipynb`: utilities for data preparation (not for visualisation).
 
 
 ## Contributing
 
-> Pick a licence and describe how to contribute to your code repository. 
+License TBD. 
 
 [1]: https://www.wandb.com

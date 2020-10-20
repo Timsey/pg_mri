@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 
 
 def train_epoch(args, epoch, recon_model, model, loader, optimiser, writer, data_range_dict):
+    """
+    Performs a single training epoch.
+
+    :param args: Argument object, containing hyperparameters for model training.
+    :param epoch: int, current training epoch.
+    :param recon_model: reconstruction model object.
+    :param model: policy model object.
+    :param loader: training data loader.
+    :param optimiser: PyTorch optimizer.
+    :param writer: Tensorboard writer.
+    :param data_range_dict: dictionary containing the dynamic range of every volume in the training data.
+    :return: (float: mean loss of this epoch, float: epoch duration)
+    """
     model.train()
     epoch_loss = [0. for _ in range(args.acquisition_steps)]
     report_loss = [0. for _ in range(args.acquisition_steps)]
@@ -59,7 +72,6 @@ def train_epoch(args, epoch, recon_model, model, loader, optimiser, writer, data
         logprob_list = []
         reward_list = []
         for step in range(args.acquisition_steps):  # Loop over acquisition steps
-            # TODO: check that this works!
             loss, mask, masked_kspace, recons = compute_backprop_trajectory(args, kspace, masked_kspace, mask,
                                                                             unnorm_gt, recons, gt_mean, gt_std,
                                                                             data_range, model, recon_model, step,
@@ -99,7 +111,17 @@ def train_epoch(args, epoch, recon_model, model, loader, optimiser, writer, data
 
 def evaluate(args, epoch, recon_model, model, loader, writer, partition, data_range_dict):
     """
-    Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
+    Evaluates the policy on all slices in a validation or test dataset on the SSIM and PSNR metrics.
+
+    :param args: Argument object, containing hyperparameters for model evaluation.
+    :param epoch: int, current training epoch.
+    :param recon_model: reconstruction model object.
+    :param model: policy model object.
+    :param loader: training data loader.
+    :param writer: Tensorboard writer.
+    :param partition: str, dataset partition to evaluate on ('val' or 'test')
+    :param data_range_dict: dictionary containing the dynamic range of every volume in the validation or test data.
+    :return: (dict: average SSIMS per time step, dict: average PSNR per time step, float: evaluation duration)
     """
     model.eval()
     ssims, psnrs = 0, 0
@@ -184,8 +206,14 @@ def evaluate(args, epoch, recon_model, model, loader, writer, partition, data_ra
     return ssims, psnrs, time.perf_counter() - start
 
 
-# TODO: Separate eval on test data script?
 def train_and_eval(args, recon_args, recon_model):
+    """
+    Wrapper for training and evaluation of policy model.
+
+    :param args: Argument object, containing hyperparameters for training and evaluation.
+    :param recon_args: reconstruction model arguments.
+    :param recon_model: reconstruction model.
+    """
     if args.resume:
         # Check that this works
         resumed = True
@@ -286,6 +314,9 @@ def train_and_eval(args, recon_args, recon_model):
 
 
 def do_and_log_evaluation(args, epoch, recon_model, model, loader, writer, partition, data_range_dict):
+    """
+    Helper function for logging.
+    """
     ssims, psnrs, score_time = evaluate(args, epoch, recon_model, model, loader, writer, partition, data_range_dict)
     ssims_str = ", ".join(["{}: {:.4f}".format(i, l) for i, l in enumerate(ssims)])
     psnrs_str = ", ".join(["{}: {:.3f}".format(i, l) for i, l in enumerate(psnrs)])
@@ -295,6 +326,12 @@ def do_and_log_evaluation(args, epoch, recon_model, model, loader, writer, parti
 
 
 def test(args, recon_model):
+    """
+    Performs evaluation of a pre-trained policy model.
+
+    :param args: Argument object containing evaluation parameters.
+    :param recon_model: reconstruction model.
+    """
     model, policy_args = load_policy_model(pathlib.Path(args.policy_model_checkpoint))
 
     # Overwrite number of trajectories to test on
@@ -329,6 +366,9 @@ def test(args, recon_model):
 
 
 def main(args):
+    """
+    Wrapper for training and testing of policy models.
+    """
     logging.info(args)
     # Reconstruction model
     recon_args, recon_model = load_recon_model(args)
@@ -381,8 +421,7 @@ def create_arg_parser():
     parser.add_argument('--batch_size', default=16, type=int, help='Mini batch size for training')
     parser.add_argument('--val_batch_size', default=64, type=int, help='Mini batch size for validation')
     parser.add_argument('--weight_decay', type=float, default=0,
-                        help='Strength of weight decay regularization. TODO: this currently breaks because many weights'
-                        'are not updated every step (since we select certain targets only); FIX THIS.')
+                        help='Strength of weight decay regularization.')
     parser.add_argument('--center_volume', type=str2bool, default=True,
                         help='If set, only the center slices of a volume will be included in the dataset. This '
                              'removes the most noisy images from the data.')
@@ -442,14 +481,15 @@ def create_arg_parser():
 
 
 def wrap_main(args):
+    """
+    Wrapper for the entire script. Performs some setup, such as setting seed and starting wandb.
+    """
     if args.seed != 0:
         random.seed(args.seed)
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
         if args.device == 'cuda':
             torch.cuda.manual_seed(args.seed)
-
-    args.use_recon_mask_params = False
 
     args.milestones = args.milestones + [0, args.num_epochs - 1]
 
@@ -476,6 +516,7 @@ if __name__ == '__main__':
 
     base_args = create_arg_parser().parse_args()
 
+    # Testing multiple policy models with one script
     if base_args.test_multi:
         assert not base_args.do_train, "Doing multiple model testing: do_train must be False."
         assert base_args.policy_model_list[0] is not None, ("Doing multiple model testing: must "

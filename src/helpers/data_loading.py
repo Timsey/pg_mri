@@ -1,4 +1,14 @@
+"""
+Part of this code is based on or a copy of the Facebook fastMRI code.
+
+Copyright (c) Facebook, Inc. and its affiliates.
+
+This source code is licensed under the MIT license found in the
+LICENSE file in the root directory of this source tree.
+"""
+
 import torch
+import warnings
 import pathlib
 import random
 import h5py
@@ -72,7 +82,7 @@ class SliceData(Dataset):
         fname, slice = self.examples[i]
         with h5py.File(fname, 'r') as data:
             target = data[self.recons_key][slice] if self.recons_key in data else None
-            if self.dataset == 'brain':  # TODO: for knee data as well?
+            if self.dataset == 'brain':  # TODO: for knee data as well: necessary for larger resolution.
                 # Pad brain data up to 384 (max size) for consistency in crop later.
                 res = 384  # Maximum size of brain data slices
                 bg = np.zeros((res, res), dtype=np.float32)
@@ -230,15 +240,15 @@ class MaskFunc:
 
 
 def create_fastmri_dataset(args, partition):
-    # TODO: Fix these paths!
+    # TODO: How to make this less hardcoded?
     if partition == 'train':
-        path = args.data_path / f'singlecoil_train_al'
+        path = args.data_path / f'singlecoil_train'
         use_seed = False
     elif partition == 'val':
         path = args.data_path / f'singlecoil_val'
         use_seed = True
     elif partition == 'test':
-        path = args.data_path / f'singlecoil_test_al'
+        path = args.data_path / f'singlecoil_test'
         use_seed = True
     else:
         raise ValueError(f"partition should be in ['train', 'val', 'test'], not {partition}")
@@ -260,11 +270,13 @@ def create_fastmri_dataset(args, partition):
 
 
 def create_data_loader(args, partition, shuffle=False, display=False):
-    # TODO: set shuffle to True for train
     dataset = create_fastmri_dataset(args, partition)
 
     if partition.lower() == 'train':
         batch_size = args.batch_size
+        if not shuffle:
+            warnings.warn("Currently not shuffling training data! Pass shuffle=True to "
+                          "create_data_loader() to shuffle.")
     elif partition.lower() in ['val', 'test']:
         batch_size = args.val_batch_size
         if display:
@@ -280,76 +292,3 @@ def create_data_loader(args, partition, shuffle=False, display=False):
         pin_memory=True,
     )
     return loader
-
-
-# def create_fastmri_datasets(args, train_mask, dev_mask, test_mask):
-#     # TODO: This not hardcoded?
-#     train_path = args.data_path / f'singlecoil_train_al'
-#     dev_path = args.data_path / f'singlecoil_val'
-#     test_path = args.data_path / f'singlecoil_test_al'
-#
-#     train_data = SliceData(
-#         root=train_path,
-#         transform=DataTransform(train_mask, args.resolution, use_seed=False),
-#         dataset=args.dataset,
-#         sample_rate=args.sample_rate,
-#         acquisition=args.acquisition,
-#         center_volume=args.center_volume
-#     )
-#
-#     dev_data = SliceData(
-#         root=dev_path,
-#         transform=DataTransform(dev_mask, args.resolution, use_seed=True),
-#         dataset=args.dataset,
-#         sample_rate=args.sample_rate,
-#         acquisition=args.acquisition,
-#         center_volume=args.center_volume
-#     )
-#
-#     test_data = SliceData(
-#         root=test_path,
-#         transform=DataTransform(test_mask, args.resolution, use_seed=True),
-#         dataset=args.dataset,
-#         sample_rate=args.sample_rate,
-#         acquisition=args.acquisition,
-#         center_volume=args.center_volume,
-#     )
-#     return train_data, dev_data, test_data
-
-
-# def create_datasets(args):
-#     train_mask = MaskFunc(args.center_fractions, args.accelerations)
-#     dev_mask = MaskFunc(args.center_fractions, args.accelerations)
-#     test_mask = MaskFunc(args.center_fractions, args.accelerations)
-#
-#     train_data, dev_data, test_data = create_fastmri_datasets(args, train_mask, dev_mask, test_mask)
-#
-#     return train_data, dev_data, test_data
-
-
-# def create_data_loaders(args, shuffle_train=True):
-#     train_data, dev_data, test_data = create_datasets(args)
-#     logging.info('Train slices: {}, Dev slices: {}, Test slices: {}'.format(
-#         len(train_data), len(dev_data), len(test_data)))
-#
-#     train_loader = DataLoader(
-#         dataset=train_data,
-#         batch_size=args.batch_size,
-#         shuffle=shuffle_train,
-#         num_workers=args.num_workers,
-#         pin_memory=True,
-#     )
-#     dev_loader = DataLoader(
-#         dataset=dev_data,
-#         batch_size=args.batch_size,
-#         num_workers=args.num_workers,
-#         pin_memory=True,
-#     )
-#
-#     test_loader = DataLoader(
-#         dataset=test_data,
-#         batch_size=args.batch_size,
-#         num_workers=args.num_workers,
-#         pin_memory=True,
-#     )
-#     return train_loader, dev_loader, test_loader
