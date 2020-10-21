@@ -49,6 +49,9 @@ CUDA_VISIBLE_DEVICES=0 python -m src.train_reconstruction --dataset brain --data
 Training is done using the train_policy.py script. Logging is done with Tensorboard and <cite>[Weights and Biases][1]</cite> (see the `wandb` argument). Note that the `wandb` argument is optional (set `wandb=False` to forego usage), but some of the visualisation notebooks require stored wandb runs to function.
 Note: effective train batch size is given as batch_size * batches_step. Higher batches step results in slower training, but less memory used (this is mostly relevant for non-greedy models). If more GPUs are available, batch size can be increase (and batches_step reduced).
 Scripts will create a datetime stamped folder in <path_to_output> to store all results in.
+
+Note that we do not include code for reproducing the AlphaZero results, as the original repository is not ours and has not been open sourced.
+
 #### Knee
 ##### Base horizon greedy (1GPU)
 ```
