@@ -1,4 +1,6 @@
 """
+Part of this code is based on or a copy of the Facebook fastMRI code.
+
 Copyright (c) Facebook, Inc. and its affiliates.
 
 This source code is licensed under the MIT license found in the
@@ -31,6 +33,17 @@ logger = logging.getLogger(__name__)
 
 
 def train_epoch(args, epoch, model, data_loader, optimizer, writer):
+    """
+    Performs a single training epoch of the reconstruction model.
+
+    :param args: Arguments object containing reconstruction model training hyperparameters.
+    :param epoch: int, current training epoch.
+    :param model: reconstruction model.
+    :param data_loader: data loader for training data.
+    :param optimizer: PyTorch optimizer.
+    :param writer: Tensorboard writer.
+    :return: (float: weighted average L1 loss, float: epoch duration)
+    """
     model.train()
     avg_loss = 0.
     true_avg_loss = 0.
@@ -64,6 +77,16 @@ def train_epoch(args, epoch, model, data_loader, optimizer, writer):
 
 
 def evaluate_loss(args, epoch, model, data_loader, writer):
+    """
+    Evaluates reconstruction model on L1 loss.
+
+    :param args: Arguments object containing reconstruction model validation hyperparameters.
+    :param epoch: int, current training epoch.
+    :param model: reconstruction model.
+    :param data_loader: validation data loader.
+    :param writer: Tensorboard writer.
+    :return: (float: average MSE loss, float: average L1 loss, float: evaluation duration)
+    """
     model.eval()
     losses = []
     start = time.perf_counter()
@@ -85,6 +108,15 @@ def evaluate_loss(args, epoch, model, data_loader, writer):
 
 
 def visualize(args, epoch, model, data_loader, writer):
+    """
+    Logs visualisations of reconstructions to Tensorboard.
+
+    :param args: Arguments object, contains reconstruction model hyperparameters.
+    :param epoch: current training epoch.
+    :param model: reconstruction model.
+    :param data_loader: visualisation data loader.
+    :param writer: Tensorboard writer.
+    """
     def save_image(image, tag):
         image -= image.min()
         image /= image.max()
@@ -105,6 +137,17 @@ def visualize(args, epoch, model, data_loader, writer):
 
 
 def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_best):
+    """
+    Reconstruction model saving utility.
+
+    :param args: Arguments object containing reconstruction model hyperparameters.
+    :param exp_dir: path to output directory.
+    :param epoch: current training epoch.
+    :param model: reconstruction model.
+    :param optimizer: PyTorch optimiser.
+    :param best_dev_loss: float, best observed validation loss.
+    :param is_new_best: bool, whether 'model' is the current best model (on validation loss).
+    """
     torch.save(
         {
             'epoch': epoch,
@@ -121,6 +164,11 @@ def save_model(args, exp_dir, epoch, model, optimizer, best_dev_loss, is_new_bes
 
 
 def train_unet(args):
+    """
+    Wrapper for reconstruction (U-Net) model training.
+
+    :param args: Arguments object, containing training hyperparameters.
+    """
     args.exp_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=args.exp_dir / 'summary')
 
@@ -163,7 +211,11 @@ def train_unet(args):
 
 
 def run_unet(args):
-    # Evaluate reconstruction model using the settings that it was trained on
+    """
+    Creates reconstructions of volumes in a dataset, and stores these to disk.
+
+    :param args: Arguments object, containing evaluation hyperparameters.
+    """
     recon_args, model = load_recon_model(args)
     recon_args.data_path = args.data_path  # in case model was trained on different machine
     data_loader = create_data_loader(recon_args, args.partition)
@@ -188,6 +240,12 @@ def run_unet(args):
 
 
 def evaluate(args):
+    """
+    Evaluates stored reconstructions in their similarity to ground truth images on MSE, NMSE, PSNR and SSIM.
+
+    :param args: Arguments object, containing evaluation hyperparameters.
+    :return: saves evaluations in reconstruction directories.
+    """
     # Use esc for Knee data, rss for Brain data (since it's technically multicoil)
     recons_key = 'reconstruction_esc' if args.dataset == 'knee' else 'reconstruction_rss'
     metrics = Metrics(METRIC_FUNCS)
@@ -215,6 +273,11 @@ def evaluate(args):
 
 
 def main(args):
+    """
+    Wrapper for training and evaluation of reconstruction model.
+
+    :param args: Arguments object containing training or evaluation hyperparameters.
+    """
     logging.info(args)
     if args.do_train:
         train_unet(args)
@@ -225,7 +288,8 @@ def main(args):
 
 def create_arg_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--seed', default=42, type=int, help='Seed for random number generators')
+    parser.add_argument('--seed', default=0, type=int, help='Seed for random number generators. If set to 0, seed will '
+                                                            'be random.')
     parser.add_argument('--resolution', default=128, type=int, help='Resolution of images')
     parser.add_argument('--dataset', default='knee', type=str, choices=['knee', 'brain'],
                         help='Dataset to use.')
@@ -280,7 +344,12 @@ def create_arg_parser():
 
 if __name__ == '__main__':
     args = create_arg_parser().parse_args()
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+
+    if args.seed != 0:
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        if args.device == 'cuda':
+            torch.cuda.manual_seed(args.seed)
+
     main(args)

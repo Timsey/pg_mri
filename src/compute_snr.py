@@ -12,7 +12,6 @@ from collections import defaultdict
 
 import torch
 
-from src.helpers.torch_metrics import compute_ssim
 from src.helpers.data_loading import create_data_loader
 from src.helpers.utils import load_json, save_json, str2bool
 from src.reconstruction_model.reconstruction_model_utils import load_recon_model
@@ -21,6 +20,13 @@ from src.policy_model.policy_model_def import build_policy_model
 
 
 def load_policy_model(checkpoint_file):
+    """
+    Loads pretrained policy model, and disables gradients for all but the last layer weights.
+
+    :param checkpoint_file: path to policy model checkpoint.
+    :return: (policy model, policy model Arguments object,
+              optimizer: PyTorch optimiser stored with policy model)
+    """
     checkpoint = torch.load(checkpoint_file)
     args = checkpoint['args']
     model = build_policy_model(args)
@@ -46,13 +52,24 @@ def load_policy_model(checkpoint_file):
 
     optimizer = build_optim(args, model.parameters())
     optimizer.load_state_dict(checkpoint['optimizer'])
-    start_epoch = checkpoint['epoch']
     del checkpoint
 
-    return model, args, start_epoch, optimizer
+    return model, args, optimizer
 
 
 def snr_from_grads(args, grads):
+    """
+    Computes average SNR as well as SNR standard deviation using gradients stored over a number of runs.
+
+    :param args: Arguments object, containing SNR computation hyperparameters.
+    :param grads: numpy array containing gradients per batch, of shape
+                  (num_batches * data_runs, last_layer_size, second_to_last_layer_size + 1).
+                  Assumes the row order in contiguous w.r.t the various data_runs (i.e. epochs). This function
+                  automatically detects the number of batches (gradients) stored, and separates them out in groups
+                  corresponding to a particular run over the data (epoch).  SNR is computed separately for each run,
+                  and then averaged.
+    :return: (float: SNR mean, float: SNR std)
+    """
     snr_list = []
     assert grads.shape[0] % args.data_runs == 0, ('Something went wrong with concatenating gradients over runs. This '
                                                   'is usually the result of a previous run having been aborted halfway '
@@ -79,6 +96,13 @@ def snr_from_grads(args, grads):
 
 
 def compute_snr(args, weight_path, bias_path):
+    """
+    Wrapper for SNR computation. Loads stored gradients and creates gradient array for further computation.
+
+    :param weight_path: str or pathlib.Path, path to stored last layer weight gradients.
+    :param bias_path: str or pathlib.Path, path to stored last layer bias node gradients.
+    :return: (float: SNR mean, float: SNR std)
+    """
     with open(weight_path, 'rb') as f:
         weight_list = pickle.load(f)
     with open(bias_path, 'rb') as f:
@@ -94,18 +118,31 @@ def compute_snr(args, weight_path, bias_path):
 
 
 def add_base_args(args, policy_args):
-    # Batch size has to be set to match those in args.
+    """
+    Utility to add / overwrite relevant SNR computation hyperparameters to policy model arguments.
+
+    """
+    # Batch and trajectory parameters have to be set to match those in args.
     policy_args.batch_size = args.batch_size
     policy_args.batches_step = args.batches_step
     policy_args.num_trajectories = args.num_trajectories
 
-    # Fix paths to those on the running machine
+    # Fix paths to those on the running machine (in case model was trained on different machine)
     policy_args.policy_model_checkpoint = args.policy_model_checkpoint
     policy_args.recon_model_checkpoint = args.recon_model_checkpoint
     policy_args.data_path = args.data_path
 
 
 def compute_gradients(args, epoch):
+    """
+    Big function that runs a single epoch of training to compute gradients for the SNR calculation. Stores gradients
+    in policy model directory, and contains checks for already stored gradients to speed up computations.
+
+    :param args: Arguments object, containing hyperparameters for training epoch.
+    :param epoch: current training epoch (i.e. milestone).
+    :return: (str: path to stored weight gradients, str: path to stored bias gradients,
+              str: parent directory for these two files)
+    """
     param_dir = (f'epoch{epoch}_t{args.num_trajectories}'
                  f'_runs{args.data_runs}_batch{args.batch_size}_bs{args.batches_step}')
     param_dir = args.policy_model_checkpoint.parent / param_dir
@@ -148,6 +185,7 @@ def compute_gradients(args, epoch):
                 pickle.dump(bias_grads, f)
             return weight_path, bias_path, param_dir
 
+    # Initialise
     start_run = 0
     weight_grads = []
     bias_grads = []
@@ -169,7 +207,7 @@ def compute_gradients(args, epoch):
             start_run = r
             break
 
-    model, policy_args, start_epoch, optimiser = load_policy_model(args.policy_model_checkpoint)
+    model, policy_args, optimiser = load_policy_model(args.policy_model_checkpoint)
     add_base_args(args, policy_args)
     recon_args, recon_model = load_recon_model(policy_args)
 
@@ -179,11 +217,9 @@ def compute_gradients(args, epoch):
     for r in range(start_run, args.data_runs):
         print(f"\n    Run {r + 1} ...")
         cbatch = 0
-        tbs = 0
         for it, data in enumerate(loader):  # Randomly shuffled every time
             kspace, masked_kspace, mask, zf, gt, gt_mean, gt_std, fname, sl_idx = data
             cbatch += 1
-            tbs += mask.size(0)
             # shape after unsqueeze = batch x channel x columns x rows x complex
             kspace = kspace.unsqueeze(1).to(policy_args.device)
             masked_kspace = masked_kspace.unsqueeze(1).to(policy_args.device)
@@ -230,6 +266,12 @@ def compute_gradients(args, epoch):
 
 
 def main(base_args):
+    """
+    Wrapper for gradient computation and SNR calculation. Saves SNR results to separate datetime-stamped directory in
+    the current working directory.
+
+    :param base_args: Arguments object containing gradient and SNR computation hyperparameters.
+    """
     results_dict = defaultdict(lambda: defaultdict(dict))
 
     runs = base_args.data_runs
@@ -296,8 +338,6 @@ def main(base_args):
 def create_arg_parser():
     parser = argparse.ArgumentParser()
 
-    # parser.add_argument('--dataset', default='knee', choices=['knee', 'brain'],
-    #                     help='Dataset type to use.')
     parser.add_argument('--data_path', type=pathlib.Path, required=True,
                         help='Path to the dataset.')
     parser.add_argument('--recon_model_checkpoint', type=pathlib.Path, required=True,

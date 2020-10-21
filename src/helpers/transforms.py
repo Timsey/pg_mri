@@ -1,4 +1,6 @@
 """
+Part of this code is based on or a copy of the Facebook fastMRI code.
+
 Copyright (c) Facebook, Inc. and its affiliates.
 
 This source code is licensed under the MIT license found in the

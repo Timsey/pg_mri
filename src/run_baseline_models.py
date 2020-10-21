@@ -25,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 
 def compute_all_scores(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt_std, recon_model, data_range):
+    """
+    Utility for the Oracle model: performs parallel computation for all possible measurements for a given state.
+    Note: this parallel computation is the reason the Oracle model requires small batch sizes, especially for
+    Brain data.
+    """
     output = torch.zeros((kspace.shape[0], kspace.shape[-2]))
     # Set all unacquired rows as rows to acquire
     to_acquire = [[] for _ in range(kspace.shape[0])]
@@ -46,11 +51,16 @@ def compute_all_scores(args, kspace, masked_kspace, mask, unnorm_gt, gt_mean, gt
 
 
 class StepMaskFunc:
-    # Mask function for average_oracle
+    """
+    Mask function specifically for the non-adaptive (average / NA) Oracle.
+
+    As the NA Oracle selects the same measurement for every slice after computing the optimal average measurement, we
+    want to initialise every acquisition step with the same mask for all slices. This object provides that utility.
+    """
     def __init__(self, step, rows, accelerations):
         assert len(rows) == step, 'Mismatch between step and number of acquired rows'
         self.step = step
-        self.rows = rows
+        self.rows = rows  # measurements selected by the NA Oracle beyond the deterministic initialisation
         assert len(accelerations) == 1, "StepMaskFunc only works for a single acceleration at a time"
         self.acceleration = accelerations[0]
         self.rng = np.random.RandomState()
@@ -76,15 +86,26 @@ class StepMaskFunc:
 
 
 def create_avg_oracle_loader(args, step, rows):
+    """
+    Utility for the NA Oracle: creates a data loader containing reconstructions that have been produced by
+    the same mask.
+
+    :param args: Arguments object, contains hyperparameters for data loading.
+    :param step: current acquisition step.
+    :param rows: currently acquired measurements, required to determine the current mask.
+    :return: DataLoader with the correct mask.
+    """
     mask = StepMaskFunc(step, rows, args.accelerations)
 
-    # TODO: Fix these paths!
+    # TODO: How to make this less hardcoded?
     if args.partition == 'train':
-        path = args.data_path / f'singlecoil_train_al'
+        path = args.data_path / f'singlecoil_train'
     elif args.partition == 'val':
         path = args.data_path / f'singlecoil_val'
     elif args.partition == 'test':
-        path = args.data_path / f'singlecoil_test_al'
+        path = args.data_path / f'singlecoil_test'
+    else:
+        raise ValueError(f"partition should be in ['train', 'val', 'test'], not {args.partition}")
 
     dataset = SliceData(
         root=path,
@@ -100,6 +121,7 @@ def create_avg_oracle_loader(args, step, rows):
     loader = DataLoader(
         dataset=dataset,
         batch_size=args.batch_size,
+        shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
     )
@@ -107,6 +129,13 @@ def create_avg_oracle_loader(args, step, rows):
 
 
 def run_average_oracle(args, recon_model):
+    """
+    Computes the non-adaptive / average / NA Oracle policy, and returns obtained scores.
+
+    :param args: Arguments object containing NA Oracle hyperparameters.
+    :param recon_model: reconstruction model.
+    :return: (dict: average SSIMS per time step, dict: average PSNR per time step, float: computation duration)
+    """
     start = time.perf_counter()
     rows = []
     ssims = np.array([0. for _ in range(args.acquisition_steps + 1)])
@@ -160,7 +189,13 @@ def run_average_oracle(args, recon_model):
 
 def run_baseline(args, recon_model, loader, data_range_dict):
     """
-    Evaluates using SSIM of reconstruction over trajectory. Doesn't require computing targets!
+    Runs any baseline model except NA Oracle, and returns obtained scores.
+
+    :param args: Arguments object containing baseline model hyperparameters.
+    :param recon_model: reconstruction model.
+    :param loader: data loader for desired dataset (val or test usually)
+    :param data_range_dict: dictionary containing the dynamic range of every volume in the validation or test data.
+    :return: (dict: average SSIMS per time step, dict: average PSNR per time step, float: computation duration)
     """
 
     ssims = 0
@@ -245,6 +280,12 @@ def run_baseline(args, recon_model, loader, data_range_dict):
 
 
 def main(args):
+    """
+    Wrapper for running baseline models.
+
+    :param args: Arguments object containing hyperparameters for baseline models.
+    """
+
     # For consistency
     args.val_batch_size = args.batch_size
     # Reconstruction model
