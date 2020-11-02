@@ -1,5 +1,5 @@
 # Experimental design for MRI by greedy policy search
-This repository is the official implementation of: [Experimental design for MRI by greedy policy search]() (NeurIPS, 2020).
+This repository is the official implementation of: [Experimental design for MRI by greedy policy search](https://arxiv.org/abs/2010.16262) (NeurIPS, 2020).
 
 ![](https://user-images.githubusercontent.com/35295146/96741535-30e79a80-13c2-11eb-8785-5263a3b522d0.png)
 
