@@ -147,9 +147,4 @@ Figures can be reproduced using the IPython notebooks in the `notebooks` directo
 - `learning_curves.ipynb`: visualise learning curves on validation and train data.
 - `split_data.ipynb`: utilities for data preparation (not for visualisation).
 
-
-## Contributing
-
-License TBD. 
-
 [1]: https://www.wandb.com
