@@ -28,8 +28,10 @@ Data should be stored as follows, as the top-level folders are hardcoded into ou
   singlecoil_test/
 ```
 
-This corresponds somewhat to the default download settings of the fastMRI data repository. For both Knee and Brain datasets the original test data contains not ground truths, and so we construct a new `singlecoil_test` from `singlecoil_train`, as explained in the paper. The IPython notebook `split_data.ipynb` in `notebooks` provides a utility for this.
-The default Brain data directory names are `multicoil_` instead of `singlecoil_`. Note that we do use not use the multicoil k-space and instead construct singlecoil k-space from the ground truth images. To save on I/O, we recommend removing the multicoil k-space from the `.h5` files (`split_data.ipynb` contains a utility for this). For naming consistency, we have also renamed `multicoil_` to `singlecoil_` for Brain data.
+This corresponds somewhat to the default download settings of the fastMRI data repository. For both Knee and Brain datasets the original test data contains not ground truths, and so we construct a new `singlecoil_test` from `singlecoil_train`, as explained in the paper. Files used as training, validation, and test volumes are given by `.txt` files in the `data_splits` directory in the root dir.
+The default Brain data directory names are `multicoil_` instead of `singlecoil_`. Note that we do use not use the multicoil k-space and instead construct singlecoil k-space from the ground truth images. To save on I/O, we recommend removing the multicoil k-space from the `.h5` files. For naming consistency, we have also renamed `multicoil_` to `singlecoil_` for Brain data.
+
+DEPRECATED: The IPython notebook `split_data.ipynb` in `notebooks` is a utility for performing data splits based on random seed, but for reproducibility we recommend using the provided data splits (in the `data_splits` directory).
 
 
 ## Training
